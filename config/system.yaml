@@ -1,9 +1,9 @@
 topics:
-  camera0: /camera0/image_raw
-  camera1: /camera1/image_raw
-  camera2: /camera2/image_raw
-  camera3: /camera3/image_raw
-  imu: /imu/data_raw
+  camera0: /fisheye/left/image_raw
+  camera1: /fisheye/right/image_raw
+  camera2: /fisheye/bleft/image_raw
+  camera3: /fisheye/bright/image_raw
+  imu: /imu_data_raw
 
 synchronization:
   image_queue_size: 10
@@ -14,6 +14,6 @@ inspection:
   report_period: 5.0
   # Set these to the device specifications to enable delayed-message counts.
   # A value of zero leaves delay detection disabled while rates are measured.
-  expected_image_rate: 0.0
-  expected_imu_rate: 0.0
+  expected_image_rate: 20.0
+  expected_imu_rate: 200.0
   delayed_period_factor: 1.5

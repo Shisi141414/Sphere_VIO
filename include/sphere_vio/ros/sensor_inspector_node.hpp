@@ -25,8 +25,8 @@ class SensorInspectorNode {
 
   struct StreamStatistics {
     std::uint64_t messages = 0;
-    std::uint64_t sequence_drops = 0;
-    std::uint64_t delayed_messages = 0;
+    std::uint64_t sequence_gap_count = 0;
+    std::uint64_t timestamp_gap_count = 0;
     std::uint64_t non_monotonic_timestamps = 0;
     std::uint64_t zero_timestamps = 0;
     bool has_previous = false;

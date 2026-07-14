@@ -165,7 +165,7 @@ void SensorInspectorNode::updateStatistics(
   }
 
   if (header.seq > statistics->previous_sequence + 1U) {
-    statistics->sequence_drops +=
+    statistics->sequence_gap_count +=
         static_cast<std::uint64_t>(header.seq - statistics->previous_sequence - 1U);
   }
 
@@ -177,7 +177,7 @@ void SensorInspectorNode::updateStatistics(
     ++statistics->interval_count;
     if (expected_period > kMinimumPeriod &&
         stamp_interval > delayed_period_factor_ * expected_period) {
-      ++statistics->delayed_messages;
+      ++statistics->timestamp_gap_count;
     }
   }
 
@@ -211,8 +211,8 @@ void SensorInspectorNode::reportCallback(const ros::TimerEvent&) {
     }
     report << " rate=" << measuredRate(statistics)
            << " Hz messages=" << statistics.messages
-           << " seq_drops=" << statistics.sequence_drops
-           << " delayed=" << statistics.delayed_messages
+           << " sequence_gap_count=" << statistics.sequence_gap_count
+           << " timestamp_gap_count=" << statistics.timestamp_gap_count
            << " non_monotonic=" << statistics.non_monotonic_timestamps
            << " zero_stamps=" << statistics.zero_timestamps
            << " metadata_changed="
@@ -225,8 +225,8 @@ void SensorInspectorNode::reportCallback(const ros::TimerEvent&) {
   report << "\n  imu topic=" << imu_topic_
          << " rate=" << measuredRate(imu_statistics_)
          << " Hz messages=" << imu_statistics_.messages
-         << " seq_drops=" << imu_statistics_.sequence_drops
-         << " delayed=" << imu_statistics_.delayed_messages
+         << " sequence_gap_count=" << imu_statistics_.sequence_gap_count
+         << " timestamp_gap_count=" << imu_statistics_.timestamp_gap_count
          << " non_monotonic=" << imu_statistics_.non_monotonic_timestamps
          << " zero_stamps=" << imu_statistics_.zero_timestamps;
   ROS_INFO_STREAM(report.str());
