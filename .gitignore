@@ -1,0 +1,51 @@
+# CMake and Catkin local output
+build/
+devel/
+install/
+logs/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Compiled files
+*.o
+*.so
+*.a
+*.out
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Python virtual environments
+.venv/
+venv/
+
+# ROS
+*.bag
+*.bag.active
+*.db3
+*.orig
+
+# Runtime output
+output/
+results/
+logs/
+data/
+
+# Editor and operating system
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Debug and profiling
+core
+core.*
+gmon.out
+
+doc/

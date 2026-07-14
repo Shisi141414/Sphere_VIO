@@ -1,0 +1,8 @@
+<launch>
+  <arg name="config_file" default="$(find sphere_vio)/config/system.yaml" />
+
+  <node pkg="sphere_vio" type="sensor_inspector_node"
+        name="sensor_inspector" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+  </node>
+</launch>
