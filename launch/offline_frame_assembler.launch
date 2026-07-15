@@ -1,0 +1,28 @@
+<launch>
+  <arg name="camera0_topic" default="/fisheye/left/image_raw" />
+  <arg name="camera1_topic" default="/fisheye/right/image_raw" />
+  <arg name="camera2_topic" default="/fisheye/bleft/image_raw" />
+  <arg name="camera3_topic" default="/fisheye/bright/image_raw" />
+  <arg name="imu_topic" default="/imu_data_raw" />
+  <arg name="sync_queue_size" default="3" />
+  <arg name="imu_queue_size" default="2000" />
+  <arg name="expected_image_rate" default="20.0" />
+  <arg name="expected_imu_rate" default="200.0" />
+  <arg name="report_every_n_frames" default="20" />
+
+  <param name="/use_sim_time" value="true" />
+
+  <node pkg="sphere_vio" type="offline_frame_assembler_node"
+        name="offline_frame_assembler" output="screen">
+    <param name="camera0_topic" value="$(arg camera0_topic)" />
+    <param name="camera1_topic" value="$(arg camera1_topic)" />
+    <param name="camera2_topic" value="$(arg camera2_topic)" />
+    <param name="camera3_topic" value="$(arg camera3_topic)" />
+    <param name="imu_topic" value="$(arg imu_topic)" />
+    <param name="sync_queue_size" value="$(arg sync_queue_size)" />
+    <param name="imu_queue_size" value="$(arg imu_queue_size)" />
+    <param name="expected_image_rate" value="$(arg expected_image_rate)" />
+    <param name="expected_imu_rate" value="$(arg expected_imu_rate)" />
+    <param name="report_every_n_frames" value="$(arg report_every_n_frames)" />
+  </node>
+</launch>

@@ -152,6 +152,12 @@ add_executable(sensor_inspector_node
 add_dependencies(sensor_inspector_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sensor_inspector_node ${catkin_LIBRARIES})
 
+add_executable(offline_frame_assembler_node
+  src/offline_frame_assembler_node.cpp
+)
+add_dependencies(offline_frame_assembler_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(offline_frame_assembler_node ${catkin_LIBRARIES})
+
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
 ## target back to the shorter version for ease of user use
@@ -187,7 +193,7 @@ target_link_libraries(sensor_inspector_node ${catkin_LIBRARIES})
 #   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 # )
 
-install(TARGETS sensor_inspector_node
+install(TARGETS sensor_inspector_node offline_frame_assembler_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
