@@ -146,6 +146,7 @@ target_link_libraries(sphere_vio_core opencv_core)
 
 add_library(sphere_vio_camera
   src/camera/kannala_brandt.cpp
+  src/camera/omni_radtan.cpp
 )
 
 add_library(sphere_vio_ros
@@ -308,5 +309,12 @@ if(CATKIN_ENABLE_TESTING)
   )
   if(TARGET test_kannala_brandt)
     target_link_libraries(test_kannala_brandt sphere_vio_camera)
+  endif()
+  catkin_add_gtest(test_omni_radtan
+    test/test_main.cpp
+    test/test_omni_radtan.cpp
+  )
+  if(TARGET test_omni_radtan)
+    target_link_libraries(test_omni_radtan sphere_vio_camera)
   endif()
 endif()

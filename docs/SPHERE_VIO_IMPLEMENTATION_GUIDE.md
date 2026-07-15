@@ -825,7 +825,31 @@ Phase 0 已完成：
 - 合成 rosbag 确定性测试
 
 Phase 1：CameraModel 和 KB4 已完成合成数据验证。
-真实相机标定尚未接入。
+
+Phase 1.5：真实四目投影模型采用 Kalibr `omni` + `radtan`。权威标定来源为：
+
+```text
+/root/catkin_ws/src/seeker_utils/config/seeker1/kalibr_cam_chain.yaml
+```
+
+Kalibr 中的 `/fisheye/*/image_raw/compressed` 与真实 rosbag 中的
+`/fisheye/*/image_raw` 是经 seeker launch/relay 映射的同一基础图像流；
+相机核心模型不处理 ROS 话题或 image transport。
+
+项目 CameraId 与 Kalibr 相机编号必须显式映射：
+
+```text
+project C0 left   <- Kalibr cam0 left
+project C1 right  <- Kalibr cam1 right
+project C2 bleft  <- Kalibr cam3 bleft
+project C3 bright <- Kalibr cam2 bright
+```
+
+不得按数组下标直接复制 Kalibr 相机。真实参数按上述项目顺序保存在
+`config/cameras.yaml`。Kalibr cam2 和 cam3 未提供 `timeshift_cam_imu`，
+对应项目 C3 和 C2 使用 `null` 与 `timeshift_available: false` 表示不可用，
+不得默认为零。时间偏移不参与本阶段的 `project()` 或 `unproject()`，应在
+后续 VIO 时间对齐阶段单独处理。
 
 当前优先级为：
 

@@ -1,0 +1,63 @@
+# Source: /root/catkin_ws/src/seeker_utils/config/seeker1/kalibr_cam_chain.yaml
+# Parameters are ordered by sphere_vio CameraId, not by Kalibr camera index.
+# The raw and compressed topics are two image_transport forms of one stream.
+cameras:
+  - camera_id: 0
+    name: left
+    kalibr_camera_id: 0
+    topic_raw: /fisheye/left/image_raw
+    topic_compressed: /fisheye/left/image_raw/compressed
+    resolution: [1088, 880]
+    model: omni
+    intrinsics: [3.233059595767585, 1693.1762522217418, 1680.9070887244018,
+                 544.7595776954244, 457.4638042684071]
+    distortion_model: radtan
+    distortion_coeffs: [-0.028535050640404982, 0.20152680316245483,
+                        -0.004062808634440269, 0.0008236825668135692]
+    timeshift_cam_imu: -0.002453926619199816
+    timeshift_available: true
+
+  - camera_id: 1
+    name: right
+    kalibr_camera_id: 1
+    topic_raw: /fisheye/right/image_raw
+    topic_compressed: /fisheye/right/image_raw/compressed
+    resolution: [1088, 880]
+    model: omni
+    intrinsics: [3.159866122804018, 1660.4661219448435, 1647.86870918612,
+                 542.0213426089924, 451.36780302391327]
+    distortion_model: radtan
+    distortion_coeffs: [-0.06220476561956501, 0.24391468755547677,
+                        -0.0038608433547756703, -0.0033763768099867968]
+    timeshift_cam_imu: -0.0024845384073989125
+    timeshift_available: true
+
+  - camera_id: 2
+    name: bleft
+    kalibr_camera_id: 3
+    topic_raw: /fisheye/bleft/image_raw
+    topic_compressed: /fisheye/bleft/image_raw/compressed
+    resolution: [1088, 880]
+    model: omni
+    intrinsics: [3.2053735217233097, 1672.601540116884, 1659.978815569607,
+                 536.4198177131659, 426.8521699443293]
+    distortion_model: radtan
+    distortion_coeffs: [-0.07611565373281055, 0.4950567988166919,
+                        -0.0030949424971219715, 0.002340714875600291]
+    timeshift_cam_imu: null
+    timeshift_available: false
+
+  - camera_id: 3
+    name: bright
+    kalibr_camera_id: 2
+    topic_raw: /fisheye/bright/image_raw
+    topic_compressed: /fisheye/bright/image_raw/compressed
+    resolution: [1088, 880]
+    model: omni
+    intrinsics: [3.193179479606374, 1671.2264917981015, 1658.6247270085908,
+                 545.6604413419071, 419.90983067712887]
+    distortion_model: radtan
+    distortion_coeffs: [-0.0962939649434078, 0.6053676143002162,
+                        -0.003790679573829382, -0.00023587592315509642]
+    timeshift_cam_imu: null
+    timeshift_available: false
