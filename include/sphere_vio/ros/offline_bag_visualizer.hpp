@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "sphere_vio/ros/offline_bag_runner.hpp"
 
 namespace sphere_vio {
@@ -8,6 +10,8 @@ struct OfflineBagVisualizerOptions {
   OfflineBagConfiguration bag;
   double playback_rate = 1.0;
   double imu_gap_warning = 0.008;
+  bool show_spherical_coverage = false;
+  std::string camera_config_file;
 };
 
 class OfflineBagVisualizer {

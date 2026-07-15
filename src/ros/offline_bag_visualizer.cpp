@@ -21,6 +21,8 @@
 #include <sensor_msgs/Imu.h>
 
 #include "sphere_vio/imu_interval_buffer.hpp"
+#include "sphere_vio/common/camera_rig_loader.hpp"
+#include "sphere_vio/geometry/spherical_geometry.hpp"
 #include "sphere_vio/ros/frame_assembler.hpp"
 #include "sphere_vio/ros/ros_conversions.hpp"
 
@@ -32,10 +34,17 @@ constexpr int kMaximumCanvasWidth = 1600;
 constexpr int kMaximumCanvasHeight = 1000;
 constexpr int kStatusHeight = 125;
 constexpr int kTimelineHeight = 95;
+constexpr int kCoverageMapWidth = 768;
+constexpr int kCoverageMapHeight = 384;
+constexpr int kCoverageMapTop = 48;
+constexpr int kCoveragePanelHeight = 482;
 constexpr std::size_t kMaximumPendingFrames = 4;
 
 const std::array<const char*, 4> kCameraNames{{"LEFT", "RIGHT", "BLEFT",
                                                "BRIGHT"}};
+const std::array<cv::Scalar, 4> kCoverageColors{
+    {cv::Scalar(80, 255, 255), cv::Scalar(80, 255, 80),
+     cv::Scalar(255, 80, 255), cv::Scalar(80, 160, 255)}};
 
 struct IntervalDisplayStatistics {
   bool first_frame = true;
@@ -110,6 +119,150 @@ void drawTextWithShadow(cv::Mat* image, const std::string& text,
               cv::LINE_AA);
 }
 
+std::vector<int> sparseCoordinates(int size, int target_count) {
+  std::vector<int> coordinates;
+  if (size <= 0 || target_count <= 0) return coordinates;
+  const int step = std::max(1, size / target_count);
+  for (int coordinate = 0; coordinate < size; coordinate += step) {
+    coordinates.push_back(coordinate);
+  }
+  if (coordinates.empty() || coordinates.back() != size - 1) {
+    coordinates.push_back(size - 1);
+  }
+  return coordinates;
+}
+
+cv::Point coveragePoint(const Eigen::Vector2d& erp_coordinate) {
+  const int x = std::max(
+      0, std::min(kCoverageMapWidth - 1,
+                  static_cast<int>(std::lround(erp_coordinate.x()))));
+  const int y = std::max(
+      0, std::min(kCoverageMapHeight - 1,
+                  static_cast<int>(std::lround(erp_coordinate.y()))));
+  return cv::Point(x, kCoverageMapTop + y);
+}
+
+bool buildSphericalCoveragePanel(const std::string& camera_config_file,
+                                 cv::Mat* panel, std::string* error) {
+  if (!panel) return false;
+  CameraRig rig;
+  if (!loadCameraRigFromYaml(camera_config_file, &rig, error)) return false;
+
+  *panel = cv::Mat(kCoveragePanelHeight, kCoverageMapWidth, CV_8UC3,
+                   cv::Scalar(14, 14, 18));
+  const cv::Rect map_area(0, kCoverageMapTop, kCoverageMapWidth,
+                          kCoverageMapHeight);
+  cv::rectangle(*panel, map_area, cv::Scalar(28, 28, 34), cv::FILLED);
+  cv::line(*panel, cv::Point(0, kCoverageMapTop),
+           cv::Point(0, kCoverageMapTop + kCoverageMapHeight - 1),
+           cv::Scalar(70, 70, 255), 2, cv::LINE_AA);
+  cv::line(*panel, cv::Point(kCoverageMapWidth - 1, kCoverageMapTop),
+           cv::Point(kCoverageMapWidth - 1,
+                     kCoverageMapTop + kCoverageMapHeight - 1),
+           cv::Scalar(70, 70, 255), 2, cv::LINE_AA);
+  cv::line(*panel,
+           cv::Point(0, kCoverageMapTop + kCoverageMapHeight / 2),
+           cv::Point(kCoverageMapWidth - 1,
+                     kCoverageMapTop + kCoverageMapHeight / 2),
+           cv::Scalar(130, 130, 130), 1, cv::LINE_AA);
+  drawTextWithShadow(panel, "BODY SPHERICAL COVERAGE",
+                     cv::Point(10, 20), 0.52, cv::Scalar(255, 255, 255));
+
+  for (CameraId camera_id = 0U; camera_id < 4U; ++camera_id) {
+    const RigCamera* camera = rig.camera(camera_id);
+    if (!camera) {
+      if (error) *error = "spherical coverage rig is missing a camera";
+      return false;
+    }
+    const std::vector<int> horizontal =
+        sparseCoordinates(camera->model->width(), 12);
+    const std::vector<int> vertical =
+        sparseCoordinates(camera->model->height(), 10);
+    int valid_count = 0;
+    int model_domain_invalid = 0;
+    for (const int v : vertical) {
+      for (const int u : horizontal) {
+        Eigen::Vector3d bearing_b;
+        if (!rig.pixelToBodyBearing(camera_id, Eigen::Vector2d(u, v),
+                                    &bearing_b)) {
+          ++model_domain_invalid;
+          continue;
+        }
+        Eigen::Vector2d erp_coordinate;
+        if (!bearingToEquirectangular(bearing_b, kCoverageMapWidth,
+                                      kCoverageMapHeight, &erp_coordinate)) {
+          if (error) *error = "cannot map a valid Body bearing to ERP";
+          return false;
+        }
+        ++valid_count;
+        cv::circle(*panel, coveragePoint(erp_coordinate), 2,
+                   kCoverageColors[camera_id], cv::FILLED, cv::LINE_AA);
+      }
+    }
+
+    const Eigen::Vector2d center_pixel(
+        0.5 * static_cast<double>(camera->model->width() - 1),
+        0.5 * static_cast<double>(camera->model->height() - 1));
+    Eigen::Vector3d center_bearing_b;
+    Eigen::Vector2d center_erp;
+    if (!rig.pixelToBodyBearing(camera_id, center_pixel,
+                                &center_bearing_b) ||
+        !bearingToEquirectangular(center_bearing_b, kCoverageMapWidth,
+                                  kCoverageMapHeight, &center_erp)) {
+      if (error) *error = "cannot map a camera center bearing to ERP";
+      return false;
+    }
+    const cv::Point center_point = coveragePoint(center_erp);
+    cv::circle(*panel, center_point, 6, kCoverageColors[camera_id], 2,
+               cv::LINE_AA);
+    drawTextWithShadow(panel, "C" + std::to_string(camera_id),
+                       center_point + cv::Point(7, -7), 0.4,
+                       kCoverageColors[camera_id]);
+
+    std::ostringstream legend;
+    legend << "C" << camera_id << " " << camera->name << " valid "
+           << valid_count << " invalid " << model_domain_invalid;
+    drawTextWithShadow(panel, legend.str(),
+                       cv::Point(10 + static_cast<int>(camera_id) * 190, 42),
+                       0.34, kCoverageColors[camera_id]);
+    std::cout << "  spherical coverage C" << camera_id << " "
+              << camera->name << ": valid samples=" << valid_count
+              << ", model-domain invalid=" << model_domain_invalid
+              << ", center bearing_b=[" << center_bearing_b.transpose()
+              << "]" << std::endl;
+  }
+
+  drawTextWithShadow(panel, "SPARSE BEARING SAMPLES | seam | equator",
+                     cv::Point(10, kCoverageMapTop + kCoverageMapHeight + 20),
+                     0.4, cv::Scalar(210, 210, 210));
+  drawTextWithShadow(panel, "NO IMAGE STITCHING | NO DEPTH",
+                     cv::Point(430,
+                               kCoverageMapTop + kCoverageMapHeight + 20),
+                     0.4, cv::Scalar(80, 190, 255));
+  return true;
+}
+
+void appendSphericalCoveragePanel(const cv::Mat& panel, cv::Mat* canvas) {
+  if (!canvas || canvas->empty() || panel.empty()) return;
+  cv::Mat displayed_panel = panel;
+  if (panel.cols > canvas->cols) {
+    const double scale =
+        static_cast<double>(canvas->cols) / static_cast<double>(panel.cols);
+    cv::resize(panel, displayed_panel,
+               cv::Size(canvas->cols,
+                        std::max(1, static_cast<int>(std::lround(
+                                        panel.rows * scale)))),
+               0.0, 0.0, cv::INTER_AREA);
+  }
+  cv::Mat combined(canvas->rows + displayed_panel.rows, canvas->cols,
+                   CV_8UC3, cv::Scalar(14, 14, 18));
+  canvas->copyTo(combined(cv::Rect(0, 0, canvas->cols, canvas->rows)));
+  const int offset_x = (canvas->cols - displayed_panel.cols) / 2;
+  displayed_panel.copyTo(combined(cv::Rect(
+      offset_x, canvas->rows, displayed_panel.cols, displayed_panel.rows)));
+  *canvas = std::move(combined);
+}
+
 IntervalDisplayStatistics calculateIntervalStatistics(
     bool first_frame, const std::vector<ImuMeasurement>& measurements,
     double gap_warning) {
@@ -159,6 +312,7 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
                  const std::vector<ImuMeasurement>& imu_measurements,
                  double imu_gap_warning, bool paused, cv::Mat* canvas,
                  IntervalDisplayStatistics* interval_statistics,
+                 const cv::Mat* spherical_coverage_panel,
                  std::string* error) {
   if (!canvas || !interval_statistics) return false;
   if (frame.images.size() != FrameAssembler::kCameraCount) {
@@ -371,6 +525,9 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
       }
     }
   }
+  if (spherical_coverage_panel) {
+    appendSphericalCoveragePanel(*spherical_coverage_panel, canvas);
+  }
   return true;
 }
 
@@ -454,6 +611,20 @@ OfflineBagVisualizer::OfflineBagVisualizer(OfflineBagVisualizerOptions options)
     : options_(std::move(options)) {}
 
 int OfflineBagVisualizer::run() {
+  cv::Mat spherical_coverage_panel;
+  if (options_.show_spherical_coverage) {
+    std::string coverage_error;
+    std::cout << "Precomputing sparse spherical coverage from: "
+              << options_.camera_config_file << std::endl;
+    if (!buildSphericalCoveragePanel(options_.camera_config_file,
+                                     &spherical_coverage_panel,
+                                     &coverage_error)) {
+      std::cerr << "Cannot build spherical coverage panel: "
+                << coverage_error << std::endl;
+      return 2;
+    }
+  }
+
   rosbag::Bag bag;
   try {
     bag.open(options_.bag.bag_path, rosbag::bagmode::Read);
@@ -499,6 +670,10 @@ int OfflineBagVisualizer::run() {
               << options_.bag.camera_topics[index];
   }
   std::cout << "\n  IMU: " << options_.bag.imu_topic << std::endl;
+  if (options_.show_spherical_coverage) {
+    std::cout << "  spherical coverage: enabled (sparse bearings only)"
+              << std::endl;
+  }
 
   try {
     cv::namedWindow(kWindowName, cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO);
@@ -545,6 +720,9 @@ int OfflineBagVisualizer::run() {
     if (!renderFrame(frame, run_statistics.processed_frames + 1, first_frame,
                      previous_frame_time, interval, options_.imu_gap_warning,
                      playback.paused(), &canvas, &interval_statistics,
+                     options_.show_spherical_coverage
+                         ? &spherical_coverage_panel
+                         : nullptr,
                      &render_error)) {
       std::cerr << "Cannot render frame: " << render_error << std::endl;
       visualization_error = true;
