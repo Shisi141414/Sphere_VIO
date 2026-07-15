@@ -19,6 +19,7 @@
 
 #include "sphere_vio/imu_interval_buffer.hpp"
 #include "sphere_vio/ros/frame_assembler.hpp"
+#include "sphere_vio/ros/ros_conversions.hpp"
 
 namespace sphere_vio {
 namespace {
@@ -155,11 +156,7 @@ int OfflineBagRunner::run() {
       if (!message) continue;
       ++run_statistics.imu_messages;
       ImuMeasurement measurement;
-      measurement.timestamp = message->header.stamp.toSec();
-      measurement.acceleration << message->linear_acceleration.x,
-          message->linear_acceleration.y, message->linear_acceleration.z;
-      measurement.angular_velocity << message->angular_velocity.x,
-          message->angular_velocity.y, message->angular_velocity.z;
+      if (!convertImuMessage(*message, &measurement)) continue;
       imu_buffer.add(measurement);
       continue;
     }

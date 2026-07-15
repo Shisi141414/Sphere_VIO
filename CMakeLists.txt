@@ -25,7 +25,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(Eigen3 REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui)
 find_package(yaml-cpp REQUIRED)
 
 ## System dependencies are found with CMake's conventions
@@ -142,7 +142,7 @@ include_directories(
 add_library(sphere_vio_core
   src/imu_interval_buffer.cpp
 )
-target_link_libraries(sphere_vio_core ${OpenCV_LIBRARIES})
+target_link_libraries(sphere_vio_core opencv_core)
 
 add_library(sphere_vio_camera
   src/camera/kannala_brandt.cpp
@@ -151,12 +151,13 @@ add_library(sphere_vio_camera
 add_library(sphere_vio_ros
   src/ros/frame_assembler.cpp
   src/ros/offline_bag_runner.cpp
+  src/ros/ros_conversions.cpp
 )
 add_dependencies(sphere_vio_ros ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sphere_vio_ros
   sphere_vio_core
   ${catkin_LIBRARIES}
-  ${OpenCV_LIBRARIES}
+  opencv_core
   yaml-cpp
 )
 
@@ -187,6 +188,19 @@ add_executable(sphere_vio_bag_runner
 )
 add_dependencies(sphere_vio_bag_runner ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sphere_vio_bag_runner sphere_vio_ros ${catkin_LIBRARIES})
+
+add_executable(sphere_vio_bag_visualizer
+  src/ros/offline_bag_visualizer.cpp
+  src/ros/offline_bag_visualizer_main.cpp
+)
+add_dependencies(sphere_vio_bag_visualizer ${catkin_EXPORTED_TARGETS})
+target_link_libraries(sphere_vio_bag_visualizer
+  sphere_vio_ros
+  ${catkin_LIBRARIES}
+  opencv_core
+  opencv_imgproc
+  opencv_highgui
+)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -224,7 +238,7 @@ target_link_libraries(sphere_vio_bag_runner sphere_vio_ros ${catkin_LIBRARIES})
 # )
 
 install(TARGETS sphere_vio_core sphere_vio_camera sphere_vio_ros sensor_inspector_node
-                sphere_vio_bag_runner
+                sphere_vio_bag_runner sphere_vio_bag_visualizer
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
