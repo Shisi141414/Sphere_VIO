@@ -120,7 +120,7 @@ find_package(yaml-cpp REQUIRED)
 catkin_package(
   INCLUDE_DIRS include
 #  LIBRARIES sphere_vio
-  LIBRARIES sphere_vio_core sphere_vio_camera sphere_vio_ros
+  LIBRARIES sphere_vio_core sphere_vio_camera sphere_vio_geometry sphere_vio_ros
   CATKIN_DEPENDS cv_bridge geometry_msgs image_transport message_filters nav_msgs roscpp rosbag sensor_msgs std_msgs tf2 tf2_ros
   DEPENDS EIGEN3 OpenCV
 #  DEPENDS system_lib
@@ -151,6 +151,10 @@ add_library(sphere_vio_camera
   src/common/camera_rig_loader.cpp
 )
 target_link_libraries(sphere_vio_camera yaml-cpp)
+
+add_library(sphere_vio_geometry
+  src/geometry/spherical_geometry.cpp
+)
 
 add_library(sphere_vio_ros
   src/ros/frame_assembler.cpp
@@ -200,6 +204,8 @@ add_executable(sphere_vio_bag_visualizer
 add_dependencies(sphere_vio_bag_visualizer ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sphere_vio_bag_visualizer
   sphere_vio_ros
+  sphere_vio_camera
+  sphere_vio_geometry
   ${catkin_LIBRARIES}
   opencv_core
   opencv_imgproc
@@ -241,8 +247,9 @@ target_link_libraries(sphere_vio_bag_visualizer
 #   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 # )
 
-install(TARGETS sphere_vio_core sphere_vio_camera sphere_vio_ros sensor_inspector_node
-                sphere_vio_bag_runner sphere_vio_bag_visualizer
+install(TARGETS sphere_vio_core sphere_vio_camera sphere_vio_geometry
+                sphere_vio_ros sensor_inspector_node sphere_vio_bag_runner
+                sphere_vio_bag_visualizer
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -329,5 +336,19 @@ if(CATKIN_ENABLE_TESTING)
       SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     target_link_libraries(test_camera_rig sphere_vio_camera yaml-cpp)
+  endif()
+  catkin_add_gtest(test_spherical_geometry
+    test/test_main.cpp
+    test/test_spherical_geometry.cpp
+  )
+  if(TARGET test_spherical_geometry)
+    target_compile_definitions(test_spherical_geometry PRIVATE
+      SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_spherical_geometry
+      sphere_vio_geometry
+      sphere_vio_camera
+      yaml-cpp
+    )
   endif()
 endif()

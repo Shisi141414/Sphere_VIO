@@ -18,6 +18,8 @@ struct CommandLineOptions {
   double duration = -1.0;
   bool has_start_offset = false;
   bool has_duration = false;
+  bool show_spherical_coverage = false;
+  std::string camera_config_file;
 };
 
 void printUsage() {
@@ -28,6 +30,8 @@ void printUsage() {
          "  --start-offset SECONDS   Offset from bag start\n"
          "  --duration SECONDS       Negative means through bag end\n"
          "  --imu-gap-warning SEC    Display warning threshold (default: 0.008)\n"
+         "  --show-spherical-coverage  Add sparse Body-bearing ERP panel\n"
+         "  --cameras FILE           Camera calibration YAML for coverage\n"
          "  --help                   Show this message"
       << std::endl;
 }
@@ -54,6 +58,10 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
     if (argument == "--help" || argument == "-h") {
       *help_requested = true;
       return true;
+    }
+    if (argument == "--show-spherical-coverage") {
+      options->show_spherical_coverage = true;
+      continue;
     }
     if (index + 1 >= argc) {
       if (error) *error = "missing value after " + argument;
@@ -86,6 +94,8 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
         if (error) *error = "invalid --imu-gap-warning value: " + value;
         return false;
       }
+    } else if (argument == "--cameras") {
+      options->camera_config_file = value;
     } else {
       if (error) *error = "unknown argument: " + argument;
       return false;
@@ -108,6 +118,12 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
     return false;
   }
   return true;
+}
+
+std::string siblingCameraConfigPath(const std::string& offline_config_path) {
+  const std::size_t separator = offline_config_path.find_last_of("/\\");
+  if (separator == std::string::npos) return "cameras.yaml";
+  return offline_config_path.substr(0, separator + 1) + "cameras.yaml";
 }
 
 }  // namespace
@@ -144,5 +160,10 @@ int main(int argc, char** argv) {
   options.bag = std::move(bag_configuration);
   options.playback_rate = command_line.playback_rate;
   options.imu_gap_warning = command_line.imu_gap_warning;
+  options.show_spherical_coverage = command_line.show_spherical_coverage;
+  options.camera_config_file = command_line.camera_config_file.empty()
+                                   ? siblingCameraConfigPath(
+                                         command_line.config_file)
+                                   : command_line.camera_config_file;
   return sphere_vio::OfflineBagVisualizer(std::move(options)).run();
 }

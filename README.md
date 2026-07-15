@@ -77,3 +77,16 @@ It applies no camera projection and does not require `roscore`.
 
 Use Space to pause or resume, N to advance one frame while paused, and Q or
 Esc to quit.
+
+Add the optional sparse Body-bearing ERP coverage panel with:
+
+```bash
+/root/catkin_ws/devel/lib/sphere_vio/sphere_vio_bag_visualizer \
+  --config /root/catkin_ws/src/sphere_vio/config/offline.yaml \
+  --bag /absolute/path/to/data.bag \
+  --show-spherical-coverage
+```
+
+The panel uses `config/cameras.yaml` by default, plots only calibrated sparse
+bearing samples, and performs no image stitching or depth estimation. Use
+`--cameras FILE` to select another camera calibration explicitly.

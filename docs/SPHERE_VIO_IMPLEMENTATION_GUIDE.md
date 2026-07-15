@@ -878,6 +878,35 @@ bearing_b = normalize(R_b_c * bearing_c)
 unavailable，尚未参与时间对齐。本阶段没有开始球面极线、特征、深度估计、
 三角化或 ESKF。
 
+Phase 2B：基础球面表示与 ERP 参数化已实现。所有输入均为 Body 坐标系
+bearing，采用：
+
+```text
+longitude = atan2(y, x)                         in [-pi, pi)
+latitude  = atan2(z, sqrt(x*x + y*y))           in [-pi/2, pi/2]
+```
+
+longitude 是绕 z 轴的方位角，latitude 是相对 x-y 平面的纬度角；这里不额外
+假定某一经度对应车辆正前方。正负极点的 longitude 数学上不唯一，转换时固定
+为 0，确保结果确定且有限。
+
+ERP 使用连续几何坐标：
+
+```text
+u = width  * (longitude + pi) / (2*pi)          in [0, width)
+v = height * (pi/2 - latitude) / pi             in [0, height]
+```
+
+水平方向周期化，`u=width` 与 `u=0` 等价；没有使用 `width-1` 或
+`height-1`。ERP 坐标不是可直接访问 `cv::Mat` 的整数索引，调用方仍需明确
+处理水平 wrap、垂直边界和像素中心约定。三维几何继续直接使用单位 bearing，
+经纬角和 ERP 目前只用于参数化、索引与调试可视化。
+
+离线 visualizer 的可选 `--show-spherical-coverage` 面板预计算四相机稀疏
+`pixel -> bearing_c -> bearing_b -> ERP` 覆盖点，只显示缝合线、赤道与相机
+中心方向；不进行图像拼接、重叠混合或深度估计。当前仍未实现球面极线、
+三角化或深度。
+
 当前优先级为：
 
 ```text
