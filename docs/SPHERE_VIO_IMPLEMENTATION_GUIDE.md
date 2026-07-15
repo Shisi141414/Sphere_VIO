@@ -851,6 +851,33 @@ project C3 bright <- Kalibr cam2 bright
 不得默认为零。时间偏移不参与本阶段的 `project()` 或 `unproject()`，应在
 后续 VIO 时间对齐阶段单独处理。
 
+Phase 2：`CameraRig`、真实外参与统一 Body bearing 已完成。当前约定 B 与
+IMU 坐标系对齐。`config/cameras.yaml` 保存权威 Kalibr 文件中的原始
+`T_cam_imu`，其语义为：
+
+```text
+p_c = R_c_b * p_b + t_c_b
+```
+
+加载时显式求逆并在 `CameraRig` 中保存：
+
+```text
+R_b_c = R_c_b.transpose()
+t_b_c = -R_b_c * t_c_b
+```
+
+方向变换只使用旋转并显式归一化：
+
+```text
+bearing_b = normalize(R_b_c * bearing_c)
+```
+
+三维点变换则使用旋转和平移。项目与 Kalibr 相机编号仍严格采用
+`C0/C1/C2/C3 <- cam0/cam1/cam3/cam2`。`T_cn_cnm1` 不用于构建 Rig，
+只用于验证 `T_cam_imu` 推导出的相邻相机变换。缺失的时间偏移继续保持
+unavailable，尚未参与时间对齐。本阶段没有开始球面极线、特征、深度估计、
+三角化或 ESKF。
+
 当前优先级为：
 
 ```text

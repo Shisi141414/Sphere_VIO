@@ -145,9 +145,12 @@ add_library(sphere_vio_core
 target_link_libraries(sphere_vio_core opencv_core)
 
 add_library(sphere_vio_camera
+  src/camera/camera_rig.cpp
   src/camera/kannala_brandt.cpp
   src/camera/omni_radtan.cpp
+  src/common/camera_rig_loader.cpp
 )
+target_link_libraries(sphere_vio_camera yaml-cpp)
 
 add_library(sphere_vio_ros
   src/ros/frame_assembler.cpp
@@ -316,5 +319,15 @@ if(CATKIN_ENABLE_TESTING)
   )
   if(TARGET test_omni_radtan)
     target_link_libraries(test_omni_radtan sphere_vio_camera)
+  endif()
+  catkin_add_gtest(test_camera_rig
+    test/test_main.cpp
+    test/test_camera_rig.cpp
+  )
+  if(TARGET test_camera_rig)
+    target_compile_definitions(test_camera_rig PRIVATE
+      SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_camera_rig sphere_vio_camera yaml-cpp)
   endif()
 endif()
