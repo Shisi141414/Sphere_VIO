@@ -60,3 +60,20 @@ rosrun sphere_vio sphere_vio_bag_runner \
 The first completed image frame establishes the left boundary of the first IMU
 interval. Measurements at and before that timestamp are discarded. Each later
 frame extracts IMU measurements in `(previous_image_time, current_image_time]`.
+
+## Basic offline visualization
+
+The raw-sensor visualizer displays synchronized images as `left/right` over
+`bleft/bright`, together with image timing and per-frame IMU interval status.
+It applies no camera projection and does not require `roscore`.
+
+```bash
+/root/catkin_ws/devel/lib/sphere_vio/sphere_vio_bag_visualizer \
+  --config /root/catkin_ws/src/sphere_vio/config/offline.yaml \
+  --bag /absolute/path/to/data.bag \
+  --rate 1.0 \
+  --imu-gap-warning 0.008
+```
+
+Use Space to pause or resume, N to advance one frame while paused, and Q or
+Esc to quit.

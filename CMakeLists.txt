@@ -25,7 +25,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(Eigen3 REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui)
 find_package(yaml-cpp REQUIRED)
 
 ## System dependencies are found with CMake's conventions
@@ -120,7 +120,7 @@ find_package(yaml-cpp REQUIRED)
 catkin_package(
   INCLUDE_DIRS include
 #  LIBRARIES sphere_vio
-  LIBRARIES sphere_vio_core sphere_vio_ros
+  LIBRARIES sphere_vio_core sphere_vio_camera sphere_vio_ros
   CATKIN_DEPENDS cv_bridge geometry_msgs image_transport message_filters nav_msgs roscpp rosbag sensor_msgs std_msgs tf2 tf2_ros
   DEPENDS EIGEN3 OpenCV
 #  DEPENDS system_lib
@@ -142,17 +142,22 @@ include_directories(
 add_library(sphere_vio_core
   src/imu_interval_buffer.cpp
 )
-target_link_libraries(sphere_vio_core ${OpenCV_LIBRARIES})
+target_link_libraries(sphere_vio_core opencv_core)
+
+add_library(sphere_vio_camera
+  src/camera/kannala_brandt.cpp
+)
 
 add_library(sphere_vio_ros
   src/ros/frame_assembler.cpp
   src/ros/offline_bag_runner.cpp
+  src/ros/ros_conversions.cpp
 )
 add_dependencies(sphere_vio_ros ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sphere_vio_ros
   sphere_vio_core
   ${catkin_LIBRARIES}
-  ${OpenCV_LIBRARIES}
+  opencv_core
   yaml-cpp
 )
 
@@ -183,6 +188,19 @@ add_executable(sphere_vio_bag_runner
 )
 add_dependencies(sphere_vio_bag_runner ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sphere_vio_bag_runner sphere_vio_ros ${catkin_LIBRARIES})
+
+add_executable(sphere_vio_bag_visualizer
+  src/ros/offline_bag_visualizer.cpp
+  src/ros/offline_bag_visualizer_main.cpp
+)
+add_dependencies(sphere_vio_bag_visualizer ${catkin_EXPORTED_TARGETS})
+target_link_libraries(sphere_vio_bag_visualizer
+  sphere_vio_ros
+  ${catkin_LIBRARIES}
+  opencv_core
+  opencv_imgproc
+  opencv_highgui
+)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -219,8 +237,8 @@ target_link_libraries(sphere_vio_bag_runner sphere_vio_ros ${catkin_LIBRARIES})
 #   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 # )
 
-install(TARGETS sphere_vio_core sphere_vio_ros sensor_inspector_node
-                sphere_vio_bag_runner
+install(TARGETS sphere_vio_core sphere_vio_camera sphere_vio_ros sensor_inspector_node
+                sphere_vio_bag_runner sphere_vio_bag_visualizer
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -283,5 +301,12 @@ if(CATKIN_ENABLE_TESTING)
   )
   if(TARGET test_imu_interval_buffer)
     target_link_libraries(test_imu_interval_buffer sphere_vio_core)
+  endif()
+  catkin_add_gtest(test_kannala_brandt
+    test/test_main.cpp
+    test/test_kannala_brandt.cpp
+  )
+  if(TARGET test_kannala_brandt)
+    target_link_libraries(test_kannala_brandt sphere_vio_camera)
   endif()
 endif()
