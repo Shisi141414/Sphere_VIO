@@ -1,0 +1,8 @@
+<launch>
+  <arg name="config_file" default="$(find sphere_vio)/config/offline.yaml" />
+  <arg name="bag_path" />
+
+  <node pkg="sphere_vio" type="sphere_vio_bag_runner"
+        name="sphere_vio_bag_runner" output="screen"
+        args="--config $(arg config_file) --bag $(arg bag_path)" />
+</launch>

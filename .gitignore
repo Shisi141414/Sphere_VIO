@@ -48,7 +48,10 @@ core
 core.*
 gmon.out
 
-doc/
+# Keep the implementation guide versioned; other local reference documents
+# remain outside this phase's source changes.
+docs/*
+!docs/SPHERE_VIO_IMPLEMENTATION_GUIDE.md
 
 # Temporary files
 *.log

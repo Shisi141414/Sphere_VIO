@@ -1,0 +1,19 @@
+bag:
+  path: ""
+
+topics:
+  camera0: /fisheye/left/image_raw
+  camera1: /fisheye/right/image_raw
+  camera2: /fisheye/bleft/image_raw
+  camera3: /fisheye/bright/image_raw
+  imu: /imu_data_raw
+
+synchronization:
+  maximum_image_time_difference: 0.001
+  require_exact_image_timestamps: true
+
+offline:
+  start_time_offset: 0.0
+  duration: -1.0
+  progress_interval_frames: 100
+  maximum_imu_time_difference: 0.05

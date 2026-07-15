@@ -17,11 +17,16 @@ find_package(catkin REQUIRED COMPONENTS
   message_filters
   nav_msgs
   roscpp
+  rosbag
   sensor_msgs
   std_msgs
   tf2
   tf2_ros
 )
+
+find_package(Eigen3 REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core)
+find_package(yaml-cpp REQUIRED)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -115,7 +120,9 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
   INCLUDE_DIRS include
 #  LIBRARIES sphere_vio
-  CATKIN_DEPENDS cv_bridge geometry_msgs image_transport message_filters nav_msgs roscpp sensor_msgs std_msgs tf2 tf2_ros
+  LIBRARIES sphere_vio_core sphere_vio_ros
+  CATKIN_DEPENDS cv_bridge geometry_msgs image_transport message_filters nav_msgs roscpp rosbag sensor_msgs std_msgs tf2 tf2_ros
+  DEPENDS EIGEN3 OpenCV
 #  DEPENDS system_lib
 )
 
@@ -128,6 +135,25 @@ catkin_package(
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+)
+
+add_library(sphere_vio_core
+  src/imu_interval_buffer.cpp
+)
+target_link_libraries(sphere_vio_core ${OpenCV_LIBRARIES})
+
+add_library(sphere_vio_ros
+  src/ros/frame_assembler.cpp
+  src/ros/offline_bag_runner.cpp
+)
+add_dependencies(sphere_vio_ros ${catkin_EXPORTED_TARGETS})
+target_link_libraries(sphere_vio_ros
+  sphere_vio_core
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  yaml-cpp
 )
 
 ## Declare a C++ library
@@ -152,11 +178,11 @@ add_executable(sensor_inspector_node
 add_dependencies(sensor_inspector_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sensor_inspector_node ${catkin_LIBRARIES})
 
-add_executable(offline_frame_assembler_node
-  src/offline_frame_assembler_node.cpp
+add_executable(sphere_vio_bag_runner
+  src/ros/offline_bag_runner_main.cpp
 )
-add_dependencies(offline_frame_assembler_node ${catkin_EXPORTED_TARGETS})
-target_link_libraries(offline_frame_assembler_node ${catkin_LIBRARIES})
+add_dependencies(sphere_vio_bag_runner ${catkin_EXPORTED_TARGETS})
+target_link_libraries(sphere_vio_bag_runner sphere_vio_ros ${catkin_LIBRARIES})
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -193,7 +219,10 @@ target_link_libraries(offline_frame_assembler_node ${catkin_LIBRARIES})
 #   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 # )
 
-install(TARGETS sensor_inspector_node offline_frame_assembler_node
+install(TARGETS sphere_vio_core sphere_vio_ros sensor_inspector_node
+                sphere_vio_bag_runner
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -239,3 +268,20 @@ install(DIRECTORY config launch
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_frame_assembler
+    test/test_main.cpp
+    test/test_frame_assembler.cpp
+  )
+  if(TARGET test_frame_assembler)
+    target_link_libraries(test_frame_assembler sphere_vio_ros)
+  endif()
+  catkin_add_gtest(test_imu_interval_buffer
+    test/test_main.cpp
+    test/test_imu_interval_buffer.cpp
+  )
+  if(TARGET test_imu_interval_buffer)
+    target_link_libraries(test_imu_interval_buffer sphere_vio_core)
+  endif()
+endif()
