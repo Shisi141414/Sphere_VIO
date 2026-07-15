@@ -824,6 +824,9 @@ Phase 0 已完成：
 - IMU 区间提取
 - 合成 rosbag 确定性测试
 
+Phase 1：CameraModel 和 KB4 已完成合成数据验证。
+真实相机标定尚未接入。
+
 当前优先级为：
 
 ```text

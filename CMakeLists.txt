@@ -120,7 +120,7 @@ find_package(yaml-cpp REQUIRED)
 catkin_package(
   INCLUDE_DIRS include
 #  LIBRARIES sphere_vio
-  LIBRARIES sphere_vio_core sphere_vio_ros
+  LIBRARIES sphere_vio_core sphere_vio_camera sphere_vio_ros
   CATKIN_DEPENDS cv_bridge geometry_msgs image_transport message_filters nav_msgs roscpp rosbag sensor_msgs std_msgs tf2 tf2_ros
   DEPENDS EIGEN3 OpenCV
 #  DEPENDS system_lib
@@ -143,6 +143,10 @@ add_library(sphere_vio_core
   src/imu_interval_buffer.cpp
 )
 target_link_libraries(sphere_vio_core ${OpenCV_LIBRARIES})
+
+add_library(sphere_vio_camera
+  src/camera/kannala_brandt.cpp
+)
 
 add_library(sphere_vio_ros
   src/ros/frame_assembler.cpp
@@ -219,7 +223,7 @@ target_link_libraries(sphere_vio_bag_runner sphere_vio_ros ${catkin_LIBRARIES})
 #   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 # )
 
-install(TARGETS sphere_vio_core sphere_vio_ros sensor_inspector_node
+install(TARGETS sphere_vio_core sphere_vio_camera sphere_vio_ros sensor_inspector_node
                 sphere_vio_bag_runner
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
@@ -283,5 +287,12 @@ if(CATKIN_ENABLE_TESTING)
   )
   if(TARGET test_imu_interval_buffer)
     target_link_libraries(test_imu_interval_buffer sphere_vio_core)
+  endif()
+  catkin_add_gtest(test_kannala_brandt
+    test/test_main.cpp
+    test/test_kannala_brandt.cpp
+  )
+  if(TARGET test_kannala_brandt)
+    target_link_libraries(test_kannala_brandt sphere_vio_camera)
   endif()
 endif()
