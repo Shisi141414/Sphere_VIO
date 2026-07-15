@@ -49,3 +49,9 @@ core.*
 gmon.out
 
 doc/
+
+# Temporary files
+*.log
+*.tmp
+__pycache__/
+*.pyc
