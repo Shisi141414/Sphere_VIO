@@ -10,6 +10,7 @@ namespace sphere_vio {
 
 using Timestamp = double;
 using CameraId = std::uint32_t;
+using FeatureId = std::uint64_t;
 
 struct ImageFrame {
   Timestamp timestamp = 0.0;
