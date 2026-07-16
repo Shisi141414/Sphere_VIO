@@ -25,7 +25,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(Eigen3 REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d video highgui)
 find_package(yaml-cpp REQUIRED)
 
 ## System dependencies are found with CMake's conventions
@@ -120,7 +120,7 @@ find_package(yaml-cpp REQUIRED)
 catkin_package(
   INCLUDE_DIRS include
 #  LIBRARIES sphere_vio
-  LIBRARIES sphere_vio_core sphere_vio_camera sphere_vio_geometry sphere_vio_ros
+  LIBRARIES sphere_vio_core sphere_vio_camera sphere_vio_geometry sphere_vio_frontend sphere_vio_ros
   CATKIN_DEPENDS cv_bridge geometry_msgs image_transport message_filters nav_msgs roscpp rosbag sensor_msgs std_msgs tf2 tf2_ros
   DEPENDS EIGEN3 OpenCV
 #  DEPENDS system_lib
@@ -158,14 +158,31 @@ add_library(sphere_vio_geometry
   src/geometry/triangulation.cpp
 )
 
+add_library(sphere_vio_frontend
+  src/frontend/feature_detector.cpp
+  src/frontend/feature_tracker.cpp
+  src/frontend/temporal_frontend.cpp
+)
+target_link_libraries(sphere_vio_frontend
+  sphere_vio_camera
+  opencv_core
+  opencv_imgproc
+  opencv_features2d
+  opencv_video
+)
+
 add_library(sphere_vio_ros
   src/ros/frame_assembler.cpp
+  src/ros/frontend_options_loader.cpp
   src/ros/offline_bag_runner.cpp
+  src/ros/offline_feature_runner.cpp
   src/ros/ros_conversions.cpp
 )
 add_dependencies(sphere_vio_ros ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sphere_vio_ros
   sphere_vio_core
+  sphere_vio_camera
+  sphere_vio_frontend
   ${catkin_LIBRARIES}
   opencv_core
   yaml-cpp
@@ -199,6 +216,18 @@ add_executable(sphere_vio_bag_runner
 add_dependencies(sphere_vio_bag_runner ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sphere_vio_bag_runner sphere_vio_ros ${catkin_LIBRARIES})
 
+add_executable(sphere_vio_feature_runner
+  src/ros/offline_feature_runner_main.cpp
+)
+add_dependencies(sphere_vio_feature_runner ${catkin_EXPORTED_TARGETS})
+target_link_libraries(sphere_vio_feature_runner
+  sphere_vio_ros
+  sphere_vio_frontend
+  sphere_vio_camera
+  ${catkin_LIBRARIES}
+  yaml-cpp
+)
+
 add_executable(sphere_vio_bag_visualizer
   src/ros/offline_bag_visualizer.cpp
   src/ros/offline_bag_visualizer_main.cpp
@@ -208,6 +237,7 @@ target_link_libraries(sphere_vio_bag_visualizer
   sphere_vio_ros
   sphere_vio_camera
   sphere_vio_geometry
+  sphere_vio_frontend
   ${catkin_LIBRARIES}
   opencv_core
   opencv_imgproc
@@ -250,8 +280,9 @@ target_link_libraries(sphere_vio_bag_visualizer
 # )
 
 install(TARGETS sphere_vio_core sphere_vio_camera sphere_vio_geometry
+                sphere_vio_frontend
                 sphere_vio_ros sensor_inspector_node sphere_vio_bag_runner
-                sphere_vio_bag_visualizer
+                sphere_vio_feature_runner sphere_vio_bag_visualizer
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -377,6 +408,40 @@ if(CATKIN_ENABLE_TESTING)
     )
     target_link_libraries(test_triangulation
       sphere_vio_geometry
+      sphere_vio_camera
+      yaml-cpp
+    )
+  endif()
+  catkin_add_gtest(test_feature_detector
+    test/test_main.cpp
+    test/test_feature_detector.cpp
+  )
+  if(TARGET test_feature_detector)
+    target_link_libraries(test_feature_detector
+      sphere_vio_frontend
+      sphere_vio_camera
+    )
+  endif()
+  catkin_add_gtest(test_feature_tracker
+    test/test_main.cpp
+    test/test_feature_tracker.cpp
+  )
+  if(TARGET test_feature_tracker)
+    target_link_libraries(test_feature_tracker
+      sphere_vio_frontend
+      sphere_vio_camera
+    )
+  endif()
+  catkin_add_gtest(test_temporal_frontend
+    test/test_main.cpp
+    test/test_temporal_frontend.cpp
+  )
+  if(TARGET test_temporal_frontend)
+    target_compile_definitions(test_temporal_frontend PRIVATE
+      SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_temporal_frontend
+      sphere_vio_frontend
       sphere_vio_camera
       yaml-cpp
     )

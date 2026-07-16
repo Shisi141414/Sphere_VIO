@@ -8,6 +8,7 @@
 #include <deque>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -24,6 +25,7 @@
 #include "sphere_vio/common/camera_rig_loader.hpp"
 #include "sphere_vio/geometry/epipolar_geometry.hpp"
 #include "sphere_vio/geometry/spherical_geometry.hpp"
+#include "sphere_vio/frontend/temporal_frontend.hpp"
 #include "sphere_vio/ros/frame_assembler.hpp"
 #include "sphere_vio/ros/ros_conversions.hpp"
 
@@ -384,6 +386,55 @@ void drawEpipolarOverlay(CameraId camera_id,
                      cv::Scalar(80, 190, 255));
 }
 
+void drawTemporalFeatureOverlay(const CameraTrackingResult& tracking,
+                                cv::Mat* image) {
+  if (!image || image->empty()) return;
+  const cv::Scalar new_color(80, 220, 255);
+  const cv::Scalar tracked_color(80, 255, 80);
+  const cv::Scalar motion_color(255, 180, 50);
+  for (const FeatureTrack& track : tracking.tracks) {
+    const cv::Point current(
+        static_cast<int>(std::lround(track.current.pixel.x())),
+        static_cast<int>(std::lround(track.current.pixel.y())));
+    if (!track.newly_detected && track.has_previous_observation) {
+      const cv::Point previous(
+          static_cast<int>(std::lround(track.previous.pixel.x())),
+          static_cast<int>(std::lround(track.previous.pixel.y())));
+      cv::line(*image, previous, current, motion_color, 1, cv::LINE_AA);
+    }
+    cv::circle(*image, current, track.newly_detected ? 4 : 3,
+               track.newly_detected ? new_color : tracked_color,
+               track.newly_detected ? 1 : cv::FILLED, cv::LINE_AA);
+    cv::putText(*image, std::to_string(track.id % 10000U),
+                current + cv::Point(4, -3), cv::FONT_HERSHEY_PLAIN, 0.65,
+                track.newly_detected ? new_color : tracked_color, 1,
+                cv::LINE_AA);
+  }
+
+  const int first_line = std::max(24, image->rows - 105);
+  std::ostringstream counts;
+  counts << "ACTIVE " << tracking.tracks.size() << " | NEW "
+         << tracking.newly_detected << " | TRACKED "
+         << tracking.successfully_tracked << " | REJECTED "
+         << tracking.rejected_tracks;
+  std::ostringstream quality;
+  quality << std::fixed << std::setprecision(2) << "AGE AVG "
+          << tracking.average_track_age << " | FB AVG "
+          << tracking.average_forward_backward_error;
+  drawTextWithShadow(image, counts.str(), cv::Point(12, first_line), 0.45,
+                     cv::Scalar(255, 255, 255));
+  drawTextWithShadow(image, quality.str(), cv::Point(12, first_line + 23),
+                     0.45, cv::Scalar(255, 255, 255));
+  drawTextWithShadow(image, "SAME-CAMERA TEMPORAL TRACKING",
+                     cv::Point(12, first_line + 46), 0.43, tracked_color);
+  drawTextWithShadow(image, "NO CROSS-CAMERA MATCHING",
+                     cv::Point(12, first_line + 69), 0.43,
+                     cv::Scalar(80, 190, 255));
+  drawTextWithShadow(image, "NO DEPTH ESTIMATION",
+                     cv::Point(12, first_line + 92), 0.43,
+                     cv::Scalar(80, 190, 255));
+}
+
 void appendSphericalCoveragePanel(const cv::Mat& panel, cv::Mat* canvas) {
   if (!canvas || canvas->empty() || panel.empty()) return;
   cv::Mat displayed_panel = panel;
@@ -456,6 +507,7 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
                  IntervalDisplayStatistics* interval_statistics,
                  const cv::Mat* spherical_coverage_panel,
                  const EpipolarCurveOverlay* epipolar_curve_overlay,
+                 const MultiCameraTrackingResult* temporal_tracking,
                  std::string* error) {
   if (!canvas || !interval_statistics) return false;
   if (frame.images.size() != FrameAssembler::kCameraCount) {
@@ -509,6 +561,15 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
     if (epipolar_curve_overlay) {
       drawEpipolarOverlay(static_cast<CameraId>(camera_id),
                           *epipolar_curve_overlay, &bgr);
+    }
+    if (temporal_tracking) {
+      const CameraTrackingResult& tracking =
+          temporal_tracking->cameras[camera_id];
+      if (tracking.camera_id != camera_id) {
+        if (error) *error = "temporal tracking camera id mismatch";
+        return false;
+      }
+      drawTemporalFeatureOverlay(tracking, &bgr);
     }
     cv::Mat resized;
     const cv::Size scaled_size(
@@ -758,6 +819,18 @@ OfflineBagVisualizer::OfflineBagVisualizer(OfflineBagVisualizerOptions options)
     : options_(std::move(options)) {}
 
 int OfflineBagVisualizer::run() {
+  CameraRig temporal_camera_rig;
+  std::unique_ptr<TemporalFrontend> temporal_frontend;
+  if (options_.show_temporal_features) {
+    std::string rig_error;
+    if (!loadCameraRigFromYaml(options_.camera_config_file,
+                               &temporal_camera_rig, &rig_error)) {
+      std::cerr << "Cannot load temporal frontend camera rig: " << rig_error
+                << std::endl;
+      return 2;
+    }
+    temporal_frontend.reset(new TemporalFrontend(options_.frontend));
+  }
   cv::Mat spherical_coverage_panel;
   if (options_.show_spherical_coverage) {
     std::string coverage_error;
@@ -791,6 +864,10 @@ int OfflineBagVisualizer::run() {
               << epipolar_curve_overlay.projected_sample_count
               << ", continuous segments="
               << epipolar_curve_overlay.target_segments.size() << std::endl;
+  }
+  if (options_.show_temporal_features) {
+    std::cout << "  temporal features: enabled (same-camera LK only)"
+              << std::endl;
   }
 
   rosbag::Bag bag;
@@ -889,6 +966,15 @@ int OfflineBagVisualizer::run() {
     IntervalDisplayStatistics interval_statistics;
     std::string render_error;
     cv::Mat canvas;
+    MultiCameraTrackingResult temporal_tracking;
+    if (temporal_frontend &&
+        !temporal_frontend->processFrame(frame, temporal_camera_rig,
+                                         &temporal_tracking)) {
+      std::cerr << "Temporal frontend rejected frame at "
+                << formatTimestamp(frame.timestamp) << std::endl;
+      visualization_error = true;
+      return false;
+    }
     if (!renderFrame(frame, run_statistics.processed_frames + 1, first_frame,
                      previous_frame_time, interval, options_.imu_gap_warning,
                      playback.paused(), &canvas, &interval_statistics,
@@ -898,6 +984,7 @@ int OfflineBagVisualizer::run() {
                      options_.show_epipolar_curve
                          ? &epipolar_curve_overlay
                          : nullptr,
+                     temporal_frontend ? &temporal_tracking : nullptr,
                      &render_error)) {
       std::cerr << "Cannot render frame: " << render_error << std::endl;
       visualization_error = true;

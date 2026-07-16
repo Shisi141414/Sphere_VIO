@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "sphere_vio/ros/offline_bag_visualizer.hpp"
+#include "sphere_vio/ros/frontend_options_loader.hpp"
 
 namespace {
 
@@ -20,6 +21,8 @@ struct CommandLineOptions {
   bool has_duration = false;
   bool show_spherical_coverage = false;
   bool show_epipolar_curve = false;
+  bool show_temporal_features = false;
+  std::string frontend_config_file;
   std::string camera_config_file;
   int epipolar_source_camera = 0;
   int epipolar_target_camera = 1;
@@ -38,6 +41,8 @@ void printUsage() {
          "  --show-spherical-coverage  Add sparse Body-bearing ERP panel\n"
          "  --cameras FILE           Camera YAML for geometry overlays\n"
          "  --show-epipolar-curve   Draw a calibrated spherical epipolar curve\n"
+         "  --show-temporal-features  Draw same-camera LK feature tracks\n"
+         "  --frontend-config FILE Frontend YAML (default: sibling system.yaml)\n"
          "  --epipolar-source-camera ID  Source camera C0..C3 (default: 0)\n"
          "  --epipolar-target-camera ID  Target camera C0..C3 (default: 1)\n"
          "  --epipolar-source-u VALUE    Source pixel u (default: image center)\n"
@@ -90,6 +95,10 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       options->show_epipolar_curve = true;
       continue;
     }
+    if (argument == "--show-temporal-features") {
+      options->show_temporal_features = true;
+      continue;
+    }
     if (index + 1 >= argc) {
       if (error) *error = "missing value after " + argument;
       return false;
@@ -123,6 +132,8 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       }
     } else if (argument == "--cameras") {
       options->camera_config_file = value;
+    } else if (argument == "--frontend-config") {
+      options->frontend_config_file = value;
     } else if (argument == "--epipolar-source-camera") {
       if (!parseCameraId(value, &options->epipolar_source_camera)) {
         if (error) *error = "invalid source camera id: " + value;
@@ -188,6 +199,12 @@ std::string siblingCameraConfigPath(const std::string& offline_config_path) {
   return offline_config_path.substr(0, separator + 1) + "cameras.yaml";
 }
 
+std::string siblingSystemConfigPath(const std::string& offline_config_path) {
+  const std::size_t separator = offline_config_path.find_last_of("/\\");
+  if (separator == std::string::npos) return "system.yaml";
+  return offline_config_path.substr(0, separator + 1) + "system.yaml";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -224,6 +241,7 @@ int main(int argc, char** argv) {
   options.imu_gap_warning = command_line.imu_gap_warning;
   options.show_spherical_coverage = command_line.show_spherical_coverage;
   options.show_epipolar_curve = command_line.show_epipolar_curve;
+  options.show_temporal_features = command_line.show_temporal_features;
   options.camera_config_file = command_line.camera_config_file.empty()
                                    ? siblingCameraConfigPath(
                                          command_line.config_file)
@@ -232,5 +250,16 @@ int main(int argc, char** argv) {
   options.epipolar_target_camera = command_line.epipolar_target_camera;
   options.epipolar_source_u = command_line.epipolar_source_u;
   options.epipolar_source_v = command_line.epipolar_source_v;
+  if (options.show_temporal_features) {
+    const std::string frontend_config =
+        command_line.frontend_config_file.empty()
+            ? siblingSystemConfigPath(command_line.config_file)
+            : command_line.frontend_config_file;
+    if (!sphere_vio::loadTemporalFrontendOptions(frontend_config,
+                                                  &options.frontend, &error)) {
+      std::cerr << "Invalid frontend configuration: " << error << std::endl;
+      return EXIT_FAILURE;
+    }
+  }
   return sphere_vio::OfflineBagVisualizer(std::move(options)).run();
 }

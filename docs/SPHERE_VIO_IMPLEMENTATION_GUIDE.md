@@ -971,6 +971,25 @@ baseline、最小 ray angle 和最小 depth 都由 `TriangulationOptions` 配置
 解析交点和真实四目内外参生成的合成对应验证；尚未接入自动真实图像匹配、
 逆深度滤波、多帧优化或 VIO。
 
+Phase 4A：单相机网格特征检测与同相机时序跟踪已实现。纯算法库
+`sphere_vio_frontend` 使用分网格 FAST，并对候选点执行边界、全图最小距离和
+相机模型域检查。第一帧只检测；后续帧先用金字塔 LK 做同一相机的前向与反向
+光流，再按 LK error、边界和 forward-backward error 分类过滤，轨迹数量低于
+配置比例时才补充检测。
+
+每个新检测点和成功跟踪点都执行：
+
+```text
+pixel -> bearing_c -> bearing_b
+```
+
+四路相机分别保存上一帧图像、时间戳和 active tracks，互不共享时序状态。
+`FeatureId` 在一个前端实例内全局递增，当前仅表示某一相机中的时序轨迹，不能
+解释为跨相机 landmark。每条轨迹只保存 current 与 previous 两个观测，不保留
+无限历史。当前没有建立跨相机特征关联，也没有对真实图像点执行三角化、深度或
+逆深度估计。`config/system.yaml` 中的 Phase 4A 参数仍是初始调试参数，尚未
+针对最终运动与光照条件完成调优。
+
 当前优先级为：
 
 ```text

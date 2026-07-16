@@ -17,3 +17,23 @@ inspection:
   expected_image_rate: 20.0
   expected_imu_rate: 200.0
   delayed_period_factor: 1.5
+
+# Initial Phase 4A debugging parameters. These have not been tuned for a
+# particular scene or motion profile.
+frontend:
+  maximum_features_per_camera: 250
+  grid_rows: 6
+  grid_columns: 8
+  fast_threshold: 20
+  fast_nonmax_suppression: true
+  minimum_feature_distance: 15.0
+  border_margin: 12
+
+  lk_window_size: 21
+  pyramid_levels: 4
+  lk_max_iterations: 30
+  lk_termination_epsilon: 0.01
+  maximum_lk_error: 30.0
+  maximum_forward_backward_error: 1.0
+
+  redetection_ratio: 0.75
