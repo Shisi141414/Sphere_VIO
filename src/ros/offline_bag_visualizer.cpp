@@ -24,6 +24,7 @@
 #include "sphere_vio/imu_interval_buffer.hpp"
 #include "sphere_vio/common/camera_rig_loader.hpp"
 #include "sphere_vio/frontend/cross_camera_matcher.hpp"
+#include "sphere_vio/frontend/landmark_track_manager.hpp"
 #include "sphere_vio/frontend/orb_descriptor_extractor.hpp"
 #include "sphere_vio/frontend/triangulation_candidate_evaluator.hpp"
 #include "sphere_vio/geometry/epipolar_geometry.hpp"
@@ -74,6 +75,9 @@ struct VisualizerStatistics {
   std::uint64_t candidate_admitted = 0U;
   std::array<std::uint64_t, static_cast<std::size_t>(
       TriangulationCandidateStatus::kCount)> candidate_status_counts{{}};
+  std::uint64_t landmark_tracks_created = 0U;
+  std::uint64_t landmark_association_conflicts = 0U;
+  std::size_t maximum_live_landmark_tracks = 0U;
 };
 
 struct EpipolarCurveOverlay {
@@ -446,7 +450,8 @@ void drawTemporalFeatureOverlay(const CameraTrackingResult& tracking,
 void drawCrossCameraMatchOverlay(
     const CrossCameraPairResult& matching, std::size_t maximum_matches,
     const std::array<cv::Point2d, 4>& image_offsets,
-    const std::array<cv::Point2d, 4>& image_scales, cv::Mat* canvas) {
+    const std::array<cv::Point2d, 4>& image_scales,
+    const cv::Point& summary_origin, cv::Mat* canvas) {
   if (!canvas || canvas->empty()) return;
   const std::size_t displayed =
       std::min(maximum_matches, matching.matches.size());
@@ -481,41 +486,22 @@ void drawCrossCameraMatchOverlay(
     }
   }
 
-  const int box_width = std::min(700, canvas->cols);
-  const int box_x = std::max(
-      0, std::min(canvas->cols - box_width,
-                  static_cast<int>(image_offsets[matching.camera_id_1].x)));
-  const int requested_y =
-      static_cast<int>(image_offsets[matching.camera_id_1].y) + 70;
-  const int box_y = std::max(0, std::min(canvas->rows - 122, requested_y));
-  const cv::Rect box(box_x, box_y, box_width, std::min(122, canvas->rows));
-  cv::rectangle(*canvas, box, cv::Scalar(12, 12, 16), cv::FILLED);
-  drawTextWithShadow(canvas, "CROSS-CAMERA CANDIDATE MATCHES",
-                     box.tl() + cv::Point(10, 22), 0.48, line_color);
-  drawTextWithShadow(canvas,
-                     "DESCRIPTOR + SPHERICAL EPIPOLAR FILTER",
-                     box.tl() + cv::Point(10, 45), 0.43,
-                     cv::Scalar(255, 255, 255));
   std::ostringstream pair_text;
-  pair_text << "C" << matching.camera_id_1 << "-C" << matching.camera_id_2
-            << " FINAL " << matching.matches.size() << " DISPLAYED "
-            << displayed;
-  drawTextWithShadow(canvas, pair_text.str(),
-                     box.tl() + cv::Point(10, 68), 0.43,
-                     cv::Scalar(255, 255, 255));
-  drawTextWithShadow(canvas, "NO TRIANGULATION | NO DEPTH",
-                     box.tl() + cv::Point(10, 91), 0.43,
-                     cv::Scalar(80, 190, 255));
-  drawTextWithShadow(canvas, "NO LANDMARK ASSOCIATION",
-                     box.tl() + cv::Point(10, 114), 0.43,
-                     cv::Scalar(80, 190, 255));
+  pair_text << "MATCH C" << matching.camera_id_1 << "-C"
+            << matching.camera_id_2 << " final=" << matching.matches.size()
+            << " shown=" << displayed
+            << " | descriptor + spherical epipolar"
+            << " | NO TRIANGULATION / DEPTH";
+  drawTextWithShadow(canvas, pair_text.str(), summary_origin, 0.34,
+                     line_color);
 }
 
 void drawTriangulationCandidateOverlay(
     const TriangulationCandidatePairResult& evaluation,
     std::size_t maximum_candidates,
     const std::array<cv::Point2d, 4>& image_offsets,
-    const std::array<cv::Point2d, 4>& image_scales, cv::Mat* canvas) {
+    const std::array<cv::Point2d, 4>& image_scales,
+    const cv::Point& summary_origin, cv::Mat* canvas) {
   if (!canvas || canvas->empty()) return;
   const std::size_t displayed =
       std::min(maximum_candidates, evaluation.diagnostics.size());
@@ -540,57 +526,112 @@ void drawTriangulationCandidateOverlay(
     cv::line(*canvas, first, second, color, 1, cv::LINE_AA);
     cv::circle(*canvas, first, 5, color, 2, cv::LINE_AA);
     cv::circle(*canvas, second, 5, color, 2, cv::LINE_AA);
-    if (index < 12U) {
+    if (index < 4U) {
       std::ostringstream label;
-      label << (diagnostic.admitted ? "ACCEPTED" :
-                   triangulationCandidateStatusName(diagnostic.status))
-            << std::fixed << std::setprecision(3)
-            << " d=" << diagnostic.match.descriptor_distance
-            << " epi=" << diagnostic.epipolar_error
-            << " ray=" << diagnostic.ray_angle
-            << " z=" << diagnostic.depth_1 << "/" << diagnostic.depth_2
-            << " close=" << diagnostic.closest_ray_distance
-            << " reproj="
-            << diagnostic.maximum_angular_reprojection_error;
+      label << (diagnostic.admitted ? "A" :
+                    triangulationCandidateStatusName(diagnostic.status))
+            << std::fixed << std::setprecision(1)
+            << " d" << diagnostic.match.descriptor_distance
+            << " e" << 1000.0 * diagnostic.epipolar_error
+            << " r" << 1000.0 * diagnostic.ray_angle
+            << std::setprecision(2) << " z" << diagnostic.depth_1 << "/"
+            << diagnostic.depth_2 << " c"
+            << 1000.0 * diagnostic.closest_ray_distance << " q"
+            << 1000.0 * diagnostic.maximum_angular_reprojection_error;
       const cv::Point midpoint((first.x + second.x) / 2,
                                (first.y + second.y) / 2);
-      drawTextWithShadow(canvas, label.str(), midpoint, 0.28, color);
+      drawTextWithShadow(canvas, label.str(), midpoint, 0.25, color);
     }
   }
 
-  const int box_width = std::min(760, canvas->cols);
-  const int box_x = std::max(
-      0, std::min(canvas->cols - box_width,
-                  static_cast<int>(image_offsets[evaluation.camera_id_1].x)));
-  const int requested_y =
-      static_cast<int>(image_offsets[evaluation.camera_id_1].y) + 65;
-  const int box_height = std::min(168, canvas->rows);
-  const int box_y =
-      std::max(0, std::min(canvas->rows - box_height, requested_y));
-  const cv::Rect box(box_x, box_y, box_width, box_height);
-  cv::rectangle(*canvas, box, cv::Scalar(12, 12, 16), cv::FILLED);
-  drawTextWithShadow(canvas, "TRIANGULATION CANDIDATE DIAGNOSTICS",
-                     box.tl() + cv::Point(10, 22), 0.47,
-                     cv::Scalar(80, 255, 255));
   std::ostringstream counts;
-  counts << "C" << evaluation.camera_id_1 << "-C"
-         << evaluation.camera_id_2 << " INPUT " << evaluation.input_matches
-         << " CORE " << evaluation.triangulation_successes << " ACCEPTED "
-         << evaluation.candidates.size() << " DISPLAYED " << displayed;
-  drawTextWithShadow(canvas, counts.str(), box.tl() + cv::Point(10, 47),
-                     0.41, cv::Scalar(255, 255, 255));
-  drawTextWithShadow(canvas,
-                     "LABEL: status d=descriptor epi ray z1/z2 close reproj",
-                     box.tl() + cv::Point(10, 72), 0.39,
-                     cv::Scalar(255, 255, 255));
-  drawTextWithShadow(canvas, "NO LANDMARK ASSOCIATION",
-                     box.tl() + cv::Point(10, 97), 0.42,
-                     cv::Scalar(80, 190, 255));
-  drawTextWithShadow(canvas, "NO DEPTH FILTERING",
-                     box.tl() + cv::Point(10, 122), 0.42,
-                     cv::Scalar(80, 190, 255));
-  drawTextWithShadow(canvas, "NO GROUND TRUTH",
-                     box.tl() + cv::Point(10, 147), 0.42,
+  counts << "TRI C" << evaluation.camera_id_1 << "-C"
+         << evaluation.camera_id_2 << " in=" << evaluation.input_matches
+         << " core=" << evaluation.triangulation_successes << " accepted="
+         << evaluation.candidates.size() << " shown=" << displayed
+         << " | label: d,Hamming e/r/q,mrad z,m c,mm"
+         << " | NO DEPTH FILTERING / NO GROUND TRUTH";
+  drawTextWithShadow(canvas, counts.str(), summary_origin, 0.32,
+                     cv::Scalar(80, 255, 255));
+}
+
+void drawLandmarkTrackOverlay(
+    const std::vector<LandmarkTrack>& tracks,
+    const MultiCameraTrackingResult& tracking,
+    std::uint64_t frame_index, std::size_t maximum_tracks,
+    const std::array<cv::Point2d, 4>& image_offsets,
+    const std::array<cv::Point2d, 4>& image_scales,
+    const cv::Point& summary_origin, cv::Mat* canvas) {
+  if (!canvas || canvas->empty()) return;
+  const std::array<cv::Scalar, 8> colors{{
+      cv::Scalar(80, 255, 80), cv::Scalar(255, 180, 60),
+      cv::Scalar(255, 80, 220), cv::Scalar(80, 220, 255),
+      cv::Scalar(220, 120, 255), cv::Scalar(255, 220, 80),
+      cv::Scalar(80, 160, 255), cv::Scalar(180, 255, 80)}};
+  const auto current_feature = [&](const TemporalFeatureKey& key)
+      -> const FeatureTrack* {
+    if (key.camera_id >= tracking.cameras.size()) return nullptr;
+    for (const FeatureTrack& feature :
+         tracking.cameras[key.camera_id].tracks) {
+      if (feature.id == key.feature_id &&
+          feature.camera_id == key.camera_id) {
+        return &feature;
+      }
+    }
+    return nullptr;
+  };
+  const auto canvas_point = [&](CameraId camera_id,
+                                const Eigen::Vector2d& pixel) {
+    return cv::Point(
+        static_cast<int>(std::lround(image_offsets[camera_id].x +
+                                     pixel.x() * image_scales[camera_id].x)),
+        static_cast<int>(std::lround(image_offsets[camera_id].y +
+                                     pixel.y() * image_scales[camera_id].y)));
+  };
+
+  std::size_t visible_tracks = 0U;
+  std::size_t displayed_tracks = 0U;
+  for (const LandmarkTrack& track : tracks) {
+    std::vector<std::pair<CameraId, cv::Point>> observations;
+    for (const auto& member : track.member_features) {
+      const FeatureTrack* feature = current_feature(member.second);
+      if (!feature) continue;
+      observations.emplace_back(
+          member.first, canvas_point(member.first, feature->current.pixel));
+    }
+    if (observations.empty()) continue;
+    ++visible_tracks;
+    if (displayed_tracks >= maximum_tracks) continue;
+    ++displayed_tracks;
+    const cv::Scalar color =
+        colors[track.id.value % static_cast<std::uint64_t>(colors.size())];
+    for (std::size_t index = 1U; index < observations.size(); ++index) {
+      cv::line(*canvas, observations[index - 1U].second,
+               observations[index].second, color, 2, cv::LINE_AA);
+    }
+    for (const auto& observation : observations) {
+      cv::circle(*canvas, observation.second, 6, color, 2, cv::LINE_AA);
+    }
+    std::ostringstream label;
+    label << "L" << (track.id.value % 10000U) << " "
+          << landmarkTrackStateName(track.state) << " "
+          << track.member_features.size() << "c/"
+          << track.distinct_confirmation_frame_count << "f/"
+          << (frame_index >= track.creation_frame_index
+                  ? frame_index - track.creation_frame_index + 1U
+                  : 0U)
+          << "a";
+    drawTextWithShadow(canvas, label.str(),
+                       observations.front().second + cv::Point(7, -7), 0.30,
+                       color);
+  }
+
+  std::ostringstream counts;
+  counts << "LANDMARK TRACK HYPOTHESES visible=" << visible_tracks
+         << " shown=" << displayed_tracks
+         << " | OBSERVATION ASSOCIATION ONLY"
+         << " | NO FILTERED DEPTH / NO MAP POINT / NO GROUND TRUTH";
+  drawTextWithShadow(canvas, counts.str(), summary_origin, 0.32,
                      cv::Scalar(80, 190, 255));
 }
 
@@ -671,6 +712,8 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
                  std::size_t maximum_displayed_matches,
                  const TriangulationCandidatePairResult* candidate_evaluation,
                  std::size_t maximum_displayed_candidates,
+                 const std::vector<LandmarkTrack>* landmark_tracks,
+                 std::size_t maximum_displayed_landmark_tracks,
                  std::string* error) {
   if (!canvas || !interval_statistics) return false;
   if (frame.images.size() != FrameAssembler::kCameraCount) {
@@ -696,11 +739,21 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
     return false;
   }
 
+  const bool has_match_summary =
+      candidate_evaluation != nullptr || cross_camera_matching != nullptr;
+  const bool has_landmark_summary =
+      landmark_tracks != nullptr && temporal_tracking != nullptr;
+  const int overlay_summary_lines =
+      static_cast<int>(has_match_summary) +
+      static_cast<int>(has_landmark_summary);
+  const int overlay_summary_height =
+      overlay_summary_lines == 0 ? 0 : 8 + 22 * overlay_summary_lines;
+
   const double horizontal_scale =
       static_cast<double>(kMaximumCanvasWidth) / (2.0 * maximum_width);
   const double vertical_scale =
       static_cast<double>(kMaximumCanvasHeight - kStatusHeight -
-                          kTimelineHeight) /
+                          kTimelineHeight - overlay_summary_height) /
       (2.0 * maximum_height);
   const double scale = std::min(1.0, std::min(horizontal_scale, vertical_scale));
   const int cell_width =
@@ -708,7 +761,8 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
   const int cell_height =
       std::max(1, static_cast<int>(std::lround(maximum_height * scale)));
   const int canvas_width = 2 * cell_width;
-  const int canvas_height = kStatusHeight + 2 * cell_height + kTimelineHeight;
+  const int canvas_height = kStatusHeight + 2 * cell_height +
+                            overlay_summary_height + kTimelineHeight;
   *canvas = cv::Mat(canvas_height, canvas_width, CV_8UC3,
                     cv::Scalar(18, 18, 18));
   std::array<cv::Point2d, 4> image_offsets;
@@ -847,7 +901,8 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
               cv::LINE_AA);
   drawPlaybackState(canvas, paused);
 
-  const int timeline_top = kStatusHeight + 2 * cell_height;
+  const int overlay_summary_top = kStatusHeight + 2 * cell_height;
+  const int timeline_top = overlay_summary_top + overlay_summary_height;
   const int timeline_y = timeline_top + 48;
   const int timeline_left = 38;
   const int timeline_right = canvas_width - 38;
@@ -904,11 +959,23 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
   if (candidate_evaluation) {
     drawTriangulationCandidateOverlay(*candidate_evaluation,
                                       maximum_displayed_candidates,
-                                      image_offsets, image_scales, canvas);
+                                      image_offsets, image_scales,
+                                      cv::Point(12, overlay_summary_top + 20),
+                                      canvas);
   } else if (cross_camera_matching) {
     drawCrossCameraMatchOverlay(*cross_camera_matching,
                                 maximum_displayed_matches, image_offsets,
-                                image_scales, canvas);
+                                image_scales,
+                                cv::Point(12, overlay_summary_top + 20),
+                                canvas);
+  }
+  if (landmark_tracks && temporal_tracking) {
+    const int landmark_summary_y =
+        overlay_summary_top + 20 + (has_match_summary ? 22 : 0);
+    drawLandmarkTrackOverlay(*landmark_tracks, *temporal_tracking,
+                             frame_index, maximum_displayed_landmark_tracks,
+                             image_offsets, image_scales,
+                             cv::Point(12, landmark_summary_y), canvas);
   }
   if (spherical_coverage_panel) {
     appendSphericalCoveragePanel(*spherical_coverage_panel, canvas);
@@ -1011,6 +1078,7 @@ int OfflineBagVisualizer::run() {
   std::unique_ptr<OrbDescriptorExtractor> descriptor_extractor;
   std::unique_ptr<CrossCameraMatcher> cross_camera_matcher;
   std::unique_ptr<TriangulationCandidateEvaluator> candidate_evaluator;
+  std::unique_ptr<LandmarkTrackManager> landmark_track_manager;
   if (options_.show_cross_camera_matches) {
     descriptor_extractor.reset(new OrbDescriptorExtractor(options_.descriptor));
     cross_camera_matcher.reset(new CrossCameraMatcher(options_.matcher));
@@ -1024,6 +1092,10 @@ int OfflineBagVisualizer::run() {
   if (options_.show_triangulation_candidates) {
     candidate_evaluator.reset(new TriangulationCandidateEvaluator(
         options_.triangulation_candidate));
+  }
+  if (options_.show_landmark_tracks) {
+    landmark_track_manager.reset(
+        new LandmarkTrackManager(options_.landmark_track));
   }
   cv::Mat spherical_coverage_panel;
   if (options_.show_spherical_coverage) {
@@ -1071,7 +1143,15 @@ int OfflineBagVisualizer::run() {
   }
   if (options_.show_triangulation_candidates) {
     std::cout << "  triangulation candidate diagnostics: enabled; "
-                 "no landmark association, no depth filtering"
+              << (options_.show_landmark_tracks
+                      ? "feeding observation-association hypotheses; no "
+                        "depth filtering"
+                      : "no landmark association, no depth filtering")
+              << std::endl;
+  }
+  if (options_.show_landmark_tracks) {
+    std::cout << "  landmark track hypotheses: enabled; observation "
+                 "association only, no map points"
               << std::endl;
   }
 
@@ -1187,6 +1267,8 @@ int OfflineBagVisualizer::run() {
     }
     CrossCameraPairResult cross_camera_result;
     TriangulationCandidatePairResult candidate_result;
+    std::vector<TriangulationCandidatePairResult> all_candidate_results;
+    std::vector<LandmarkTrack> current_landmark_tracks;
     if (cross_camera_matcher) {
       std::array<const ImageFrame*, 4> images{{nullptr, nullptr, nullptr,
                                                nullptr}};
@@ -1197,39 +1279,91 @@ int OfflineBagVisualizer::run() {
         }
         images[image.camera_id] = &image;
       }
-      if (!images[options_.match_camera_1] ||
-          !images[options_.match_camera_2]) {
-        visualization_error = true;
-        return false;
+      std::vector<CameraDescriptorSet> descriptor_sets;
+      const CameraId first_camera = options_.show_landmark_tracks
+                                        ? 0U
+                                        : options_.match_camera_1;
+      const CameraId last_camera = options_.show_landmark_tracks
+                                       ? 3U
+                                       : options_.match_camera_2;
+      if (options_.show_landmark_tracks) descriptor_sets.reserve(4U);
+      for (CameraId camera_id = first_camera; camera_id <= last_camera;
+           ++camera_id) {
+        if (!options_.show_landmark_tracks &&
+            camera_id != options_.match_camera_1 &&
+            camera_id != options_.match_camera_2) {
+          continue;
+        }
+        if (!images[camera_id]) {
+          visualization_error = true;
+          return false;
+        }
+        CameraDescriptorSet descriptors;
+        DescriptorExtractionStatistics extraction;
+        if (!descriptor_extractor->extract(
+                images[camera_id]->image,
+                temporal_tracking.cameras[camera_id], &descriptors,
+                &extraction)) {
+          std::cerr << "Cross-camera visualization descriptor extraction "
+                       "failed at "
+                    << formatTimestamp(frame.timestamp) << std::endl;
+          visualization_error = true;
+          return false;
+        }
+        descriptor_sets.push_back(std::move(descriptors));
       }
-      CameraDescriptorSet first_descriptors;
-      CameraDescriptorSet second_descriptors;
-      DescriptorExtractionStatistics first_statistics;
-      DescriptorExtractionStatistics second_statistics;
-      if (!descriptor_extractor->extract(
-              images[options_.match_camera_1]->image,
-              temporal_tracking.cameras[options_.match_camera_1],
-              &first_descriptors, &first_statistics) ||
-          !descriptor_extractor->extract(
-              images[options_.match_camera_2]->image,
-              temporal_tracking.cameras[options_.match_camera_2],
-              &second_descriptors, &second_statistics) ||
-          !cross_camera_matcher->matchPair(
-              first_descriptors, second_descriptors, temporal_camera_rig,
-              &cross_camera_result)) {
-        std::cerr << "Cross-camera visualization matching failed at "
-                  << formatTimestamp(frame.timestamp) << std::endl;
-        visualization_error = true;
-        return false;
+
+      std::vector<CrossCameraPairResult> matching_results;
+      if (options_.show_landmark_tracks) {
+        if (!cross_camera_matcher->matchConfiguredPairs(
+                descriptor_sets, temporal_camera_rig, &matching_results)) {
+          visualization_error = true;
+          return false;
+        }
+      } else {
+        CrossCameraPairResult selected;
+        if (!cross_camera_matcher->matchPair(
+                descriptor_sets[0], descriptor_sets[1], temporal_camera_rig,
+                &selected)) {
+          visualization_error = true;
+          return false;
+        }
+        matching_results.push_back(std::move(selected));
       }
-      if (candidate_evaluator &&
-          !candidate_evaluator->evaluatePair(
-              cross_camera_result, first_descriptors, second_descriptors,
-              temporal_camera_rig, &candidate_result)) {
-        std::cerr << "Triangulation candidate visualization failed at "
-                  << formatTimestamp(frame.timestamp) << std::endl;
-        visualization_error = true;
-        return false;
+
+      for (const CrossCameraPairResult& matching : matching_results) {
+        const auto first_set = std::find_if(
+            descriptor_sets.begin(), descriptor_sets.end(),
+            [&](const CameraDescriptorSet& set) {
+              return set.camera_id == matching.camera_id_1;
+            });
+        const auto second_set = std::find_if(
+            descriptor_sets.begin(), descriptor_sets.end(),
+            [&](const CameraDescriptorSet& set) {
+              return set.camera_id == matching.camera_id_2;
+            });
+        if (first_set == descriptor_sets.end() ||
+            second_set == descriptor_sets.end()) {
+          visualization_error = true;
+          return false;
+        }
+        TriangulationCandidatePairResult evaluated;
+        if (candidate_evaluator &&
+            !candidate_evaluator->evaluatePair(
+                matching, *first_set, *second_set, temporal_camera_rig,
+                &evaluated)) {
+          std::cerr << "Triangulation candidate visualization failed at "
+                    << formatTimestamp(frame.timestamp) << std::endl;
+          visualization_error = true;
+          return false;
+        }
+        if (matching.camera_id_1 == options_.match_camera_1 &&
+            matching.camera_id_2 == options_.match_camera_2) {
+          cross_camera_result = matching;
+          candidate_result = evaluated;
+        }
+        if (candidate_evaluator)
+          all_candidate_results.push_back(std::move(evaluated));
       }
       if (candidate_evaluator) {
         run_statistics.candidate_inputs += candidate_result.input_matches;
@@ -1244,6 +1378,34 @@ int OfflineBagVisualizer::run() {
             ++run_statistics.candidate_status_counts[status];
           }
         }
+      }
+      if (landmark_track_manager) {
+        LandmarkTrackFrameInput landmark_input;
+        landmark_input.timestamp = frame.timestamp;
+        landmark_input.frame_index = run_statistics.processed_frames + 1U;
+        landmark_input.camera_tracking = temporal_tracking.cameras;
+        for (const TriangulationCandidatePairResult& pair :
+             all_candidate_results) {
+          landmark_input.triangulation_diagnostics.insert(
+              landmark_input.triangulation_diagnostics.end(),
+              pair.diagnostics.begin(), pair.diagnostics.end());
+        }
+        LandmarkTrackFrameResult landmark_result;
+        if (!landmark_track_manager->processFrame(landmark_input,
+                                                  &landmark_result)) {
+          std::cerr << "Landmark hypothesis visualization failed at "
+                    << formatTimestamp(frame.timestamp) << std::endl;
+          visualization_error = true;
+          return false;
+        }
+        run_statistics.landmark_tracks_created +=
+            landmark_result.created.size();
+        run_statistics.landmark_association_conflicts +=
+            landmark_result.association_conflicts;
+        run_statistics.maximum_live_landmark_tracks = std::max(
+            run_statistics.maximum_live_landmark_tracks,
+            landmark_track_manager->liveTrackCount());
+        current_landmark_tracks = landmark_track_manager->activeTracks();
       }
     }
     if (!renderFrame(frame, run_statistics.processed_frames + 1, first_frame,
@@ -1260,6 +1422,9 @@ int OfflineBagVisualizer::run() {
                      options_.maximum_displayed_matches,
                      candidate_evaluator ? &candidate_result : nullptr,
                      options_.maximum_displayed_candidates,
+                     landmark_track_manager ? &current_landmark_tracks
+                                            : nullptr,
+                     options_.maximum_displayed_landmark_tracks,
                      &render_error)) {
       std::cerr << "Cannot render frame: " << render_error << std::endl;
       visualization_error = true;
@@ -1390,6 +1555,40 @@ int OfflineBagVisualizer::run() {
                 << "=" << run_statistics.candidate_status_counts[index];
     }
     std::cout << std::endl;
+  }
+  if (options_.show_landmark_tracks && landmark_track_manager) {
+    std::array<std::uint64_t,
+               static_cast<std::size_t>(LandmarkTrackState::kCount)>
+        states{{}};
+    std::uint64_t single_confirmation = 0U;
+    std::uint64_t multiple_confirmation = 0U;
+    for (const LandmarkTrack& track : landmark_track_manager->allTracks()) {
+      const std::size_t state = static_cast<std::size_t>(track.state);
+      if (state < states.size()) ++states[state];
+      if (track.distinct_confirmation_frame_count == 1U)
+        ++single_confirmation;
+      if (track.distinct_confirmation_frame_count >= 2U)
+        ++multiple_confirmation;
+    }
+    std::cout << "  landmark hypotheses created/conflicts/max live: "
+              << run_statistics.landmark_tracks_created << "/"
+              << run_statistics.landmark_association_conflicts << "/"
+              << run_statistics.maximum_live_landmark_tracks
+              << "\n  final landmark states tentative/active/stale/retired: "
+              << states[static_cast<std::size_t>(
+                     LandmarkTrackState::kTentative)]
+              << "/"
+              << states[static_cast<std::size_t>(
+                     LandmarkTrackState::kActive)]
+              << "/"
+              << states[static_cast<std::size_t>(
+                     LandmarkTrackState::kStale)]
+              << "/"
+              << states[static_cast<std::size_t>(
+                     LandmarkTrackState::kRetired)]
+              << "\n  single/multiple confirmation-frame hypotheses: "
+              << single_confirmation << "/" << multiple_confirmation
+              << std::endl;
   }
   return visualization_error ? 6 : 0;
 }

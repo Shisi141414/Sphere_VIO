@@ -67,3 +67,12 @@ frontend:
     maximum_closest_ray_distance: 0.02
     maximum_angular_reprojection_error: 0.003
     maximum_epipolar_error: 0.003
+
+  # Phase 4D landmark-hypothesis association and lifecycle defaults. These
+  # tracks carry observations only, never filtered depth or map points.
+  landmark_tracks:
+    minimum_confirmations_for_active: 2
+    maximum_frames_without_observation: 5
+    maximum_frames_without_confirmation: 30
+    retire_after_frames_without_observation: 60
+    maximum_observation_history: 40

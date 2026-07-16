@@ -25,10 +25,12 @@ struct CommandLineOptions {
   bool show_temporal_features = false;
   bool show_cross_camera_matches = false;
   bool show_triangulation_candidates = false;
+  bool show_landmark_tracks = false;
   int match_camera_1 = 0;
   int match_camera_2 = 1;
   std::size_t maximum_displayed_matches = 60U;
   std::size_t maximum_displayed_candidates = 30U;
+  std::size_t maximum_displayed_landmark_tracks = 30U;
   std::string frontend_config_file;
   std::string camera_config_file;
   int epipolar_source_camera = 0;
@@ -52,10 +54,12 @@ void printUsage() {
          "  --show-temporal-features  Draw same-camera LK feature tracks\n"
          "  --show-cross-camera-matches  Draw one configured overlap pair\n"
          "  --show-triangulation-candidates  Diagnose one overlap pair geometrically\n"
+         "  --show-landmark-tracks  Draw current landmark hypotheses\n"
          "  --match-camera-1 ID    First cross-camera id (default: 0)\n"
          "  --match-camera-2 ID    Second cross-camera id (default: 1)\n"
          "  --maximum-displayed-matches N  Display cap (default: 60)\n"
          "  --maximum-displayed-candidates N  Diagnostic cap (default: 30)\n"
+         "  --maximum-displayed-landmark-tracks N  Hypothesis cap (default: 30)\n"
          "  --frontend-config FILE Frontend YAML (default: sibling system.yaml)\n"
          "  --epipolar-source-camera ID  Source camera C0..C3 (default: 0)\n"
          "  --epipolar-target-camera ID  Target camera C0..C3 (default: 1)\n"
@@ -140,6 +144,13 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       options->show_temporal_features = true;
       continue;
     }
+    if (argument == "--show-landmark-tracks") {
+      options->show_landmark_tracks = true;
+      options->show_triangulation_candidates = true;
+      options->show_cross_camera_matches = true;
+      options->show_temporal_features = true;
+      continue;
+    }
     if (index + 1 >= argc) {
       if (error) *error = "missing value after " + argument;
       return false;
@@ -196,6 +207,15 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
                              &options->maximum_displayed_candidates)) {
         if (error) {
           *error = "invalid --maximum-displayed-candidates value: " + value;
+        }
+        return false;
+      }
+    } else if (argument == "--maximum-displayed-landmark-tracks") {
+      if (!parsePositiveSize(
+              value, &options->maximum_displayed_landmark_tracks)) {
+        if (error) {
+          *error = "invalid --maximum-displayed-landmark-tracks value: " +
+                   value;
         }
         return false;
       }
@@ -317,6 +337,7 @@ int main(int argc, char** argv) {
       command_line.show_cross_camera_matches;
   options.show_triangulation_candidates =
       command_line.show_triangulation_candidates;
+  options.show_landmark_tracks = command_line.show_landmark_tracks;
   options.match_camera_1 =
       static_cast<sphere_vio::CameraId>(command_line.match_camera_1);
   options.match_camera_2 =
@@ -325,6 +346,8 @@ int main(int argc, char** argv) {
       command_line.maximum_displayed_matches;
   options.maximum_displayed_candidates =
       command_line.maximum_displayed_candidates;
+  options.maximum_displayed_landmark_tracks =
+      command_line.maximum_displayed_landmark_tracks;
   options.camera_config_file = command_line.camera_config_file.empty()
                                    ? siblingCameraConfigPath(
                                          command_line.config_file)
@@ -360,6 +383,13 @@ int main(int argc, char** argv) {
             frontend_config, &options.triangulation_candidate, &error)) {
       std::cerr << "Invalid triangulation candidate configuration: "
                 << error << std::endl;
+      return EXIT_FAILURE;
+    }
+    if (options.show_landmark_tracks &&
+        !sphere_vio::loadLandmarkTrackManagerOptions(
+            frontend_config, &options.landmark_track, &error)) {
+      std::cerr << "Invalid landmark track configuration: " << error
+                << std::endl;
       return EXIT_FAILURE;
     }
     const sphere_vio::CrossCameraMatcher matcher(options.matcher);
