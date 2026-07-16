@@ -216,4 +216,44 @@ bool loadTriangulationCandidateOptions(
   return true;
 }
 
+bool loadLandmarkTrackManagerOptions(
+    const std::string& config_file,
+    LandmarkTrackManagerOptions* landmark_options,
+    std::string* error) {
+  if (!landmark_options) return false;
+  try {
+    const YAML::Node root = YAML::LoadFile(config_file);
+    const YAML::Node landmark_tracks =
+        root["frontend"]["landmark_tracks"];
+    if (!landmark_tracks) {
+      if (error) *error = "missing frontend.landmark_tracks section";
+      return false;
+    }
+    readIfPresent(landmark_tracks, "minimum_confirmations_for_active",
+                  &landmark_options->minimum_confirmations_for_active);
+    readIfPresent(landmark_tracks, "maximum_frames_without_observation",
+                  &landmark_options->maximum_frames_without_observation);
+    readIfPresent(landmark_tracks, "maximum_frames_without_confirmation",
+                  &landmark_options->maximum_frames_without_confirmation);
+    readIfPresent(landmark_tracks,
+                  "retire_after_frames_without_observation",
+                  &landmark_options->retire_after_frames_without_observation);
+    readIfPresent(landmark_tracks, "maximum_observation_history",
+                  &landmark_options->maximum_observation_history);
+  } catch (const YAML::Exception& exception) {
+    if (error) *error = exception.what();
+    return false;
+  }
+  if (landmark_options->minimum_confirmations_for_active < 1U ||
+      landmark_options->maximum_observation_history < 1U ||
+      landmark_options->retire_after_frames_without_observation <
+          landmark_options->maximum_frames_without_observation) {
+    if (error) {
+      *error = "landmark track parameters are outside valid ranges";
+    }
+    return false;
+  }
+  return true;
+}
+
 }  // namespace sphere_vio

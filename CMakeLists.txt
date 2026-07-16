@@ -162,6 +162,7 @@ add_library(sphere_vio_frontend
   src/frontend/cross_camera_matcher.cpp
   src/frontend/feature_detector.cpp
   src/frontend/feature_tracker.cpp
+  src/frontend/landmark_track_manager.cpp
   src/frontend/orb_descriptor_extractor.cpp
   src/frontend/temporal_frontend.cpp
   src/frontend/triangulation_candidate_evaluator.cpp
@@ -488,6 +489,17 @@ if(CATKIN_ENABLE_TESTING)
       sphere_vio_geometry
       sphere_vio_camera
       yaml-cpp
+    )
+  endif()
+  catkin_add_gtest(test_landmark_track_manager
+    test/test_main.cpp
+    test/test_landmark_track_manager.cpp
+  )
+  if(TARGET test_landmark_track_manager)
+    target_link_libraries(test_landmark_track_manager
+      sphere_vio_frontend
+      sphere_vio_geometry
+      sphere_vio_camera
     )
   endif()
 endif()

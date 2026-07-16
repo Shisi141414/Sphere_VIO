@@ -1080,6 +1080,109 @@ Phase 4C 仍没有 LandmarkId、跨帧跨相机关联、逆深度、深度滤波
 数据结构、生命周期和观测归属，再决定是否进入多帧 landmark 初始化；不得把
 当前候选直接写回 `FeatureTrack`。
 
+Phase 4D：`LandmarkTrack` 观测归属和生命周期管理已实现。纯算法层
+`LandmarkTrackManager` 加入 `sphere_vio_frontend`，不依赖 ROS、rosbag、YAML
+或 GUI。四种身份保持严格分离：
+
+```text
+FeatureId              单相机内的一条时序光流轨迹
+CrossCameraMatch       同帧两个 FeatureTrack 的匹配候选
+TriangulationCandidate 通过 Phase 4C 门控的同帧几何候选
+LandmarkTrackId        跨相机且可跨帧维护的观测关联假设编号
+```
+
+`LandmarkTrackId` 是独立强类型、单调递增且不从 `FeatureId` 派生；普通 reset
+清空假设但不回退编号。`TemporalFeatureKey=(CameraId, FeatureId)` 明确标识一路
+相机中的时序轨迹。一条 key 最多归属一个未退休假设；每条假设对每个 CameraId
+最多保留一个 member。`LandmarkTrack` 只是观测关联和生命周期容器：
+
+```text
+LandmarkTrack != confirmed landmark
+LandmarkTrack != map point
+LandmarkTrack != filtered depth
+```
+
+其中不保存持久三维位置、逆深度、融合深度、协方差或世界坐标。只允许保留最近
+一次 `TriangulationDiagnostic` 作为诊断快照，不能把其中的 `point_b` 或射线深度
+当作滤波状态。观测历史默认最多 40 条，超限删除最旧项但累计观测数不回退；
+retired 后清空观测和最近诊断，不保存图像或完整描述子历史。
+
+每帧先按 maximum epipolar error、maximum angular reprojection error、descriptor
+distance、两个 CameraId 和两个 FeatureId 稳定排序诊断。只有 `admitted=true` 且
+状态为 accepted 的候选参与关联：两个 key 均未归属时创建 tentative 假设；仅一端
+已归属时，在一相机一成员约束满足后附加另一端；两端属于同一假设时更新确认；
+两端属于不同假设时报告 `different_landmark_conflict`，不自动合并；已有同相机的
+不同 member 时报告 `same_camera_member_conflict`，不静默替换。每个输入候选均有
+明确的 `LandmarkAssociationStatus`，rejected candidate 不创建或扩展假设。
+
+admitted 关联之后，仍 active 的 member 通过同相机 LK 追加普通 temporal
+observation。相同 timestamp、CameraId 和 FeatureId 的观测去重。temporal update
+只延长 last observation 和累计观测，绝不增加 cross-camera confirmation；只有
+admitted 跨相机边增加 confirmation count。active 的默认条件是至少两个相机成员，
+并在至少 2 个不同 frame 得到确认，同一帧多条边不能伪装成多帧确认。默认生命周期
+参数为：
+
+```text
+minimum_confirmations_for_active             2 frames
+maximum_frames_without_observation           5 frames
+maximum_frames_without_confirmation         30 frames
+retire_after_frames_without_observation     60 frames
+maximum_observation_history                 40 observations
+```
+
+新建状态为 tentative；超过 5 帧无 member observation 后为 stale；stale 只有被新的
+admitted edge 重新连接才先恢复为 tentative，并在多帧确认条件仍满足时回到 active；
+超过 60 帧无观测后 retired，移出活跃 key 映射且不得重新激活。超过 30 帧无跨相机
+确认只设置 `confirmation_stale` 诊断，不会删除仍由 LK 稳定跟踪的假设。这里所有
+“超过”均使用严格大于阈值。
+
+真实 `/root/rosbags/sphere/sphere_algorithm_test.bag` 的 873 帧默认统计为：
+
+```text
+admitted candidate inputs                         140
+created LandmarkTrack hypotheses                   13
+attached new camera members                         0
+updated existing hypotheses                        23
+association conflicts                             104
+  same_camera_member_conflict                     104
+  different_landmark_conflict                       0
+lifecycle events active / stale / retired       6 / 4 / 4
+final tentative / active / stale / retired      4 / 5 / 0 / 4
+maximum simultaneous live hypotheses               10
+member camera counts (2 / 3 / 4)             13 / 0 / 0
+single-frame / multi-frame confirmations         7 / 6
+ever reached active                                  6
+C2-C3-only hypotheses                               11
+hypotheses involving C0 or C1                        2
+longest consecutive frames without a new track     293
+longest consecutive frames with C2-C3 candidates     8
+repeated exact feature pairs / maximum repeats  12 / 50
+```
+
+13 条假设的 lifetime frame 数 min/p10/median/p90/p95/max 为
+87/103.6/255/790.8/798/807；累计 observation count 为
+61/105.6/269/848.8/857.8/868；cross-camera confirmation count 和 distinct
+confirmation frame count 均为 1/1/1/6.8/7.4/8。所有假设都只有两个相机成员，
+没有为了制造三相机或四相机假设而放宽 Phase 4B/4C 门控。104 次冲突全部来自
+同一假设已有该相机的另一条 member，已显式拒绝而非替换；当前没有出现两个既有
+假设之间的自动合并机会。
+
+feature runner 的 `--landmark-tracks` 默认关闭，启用时自动打开跨相机匹配和
+三角化候选依赖。两次完整真实 bag 运行在去除各模块墙钟耗时和 rospack 临时缓存
+文件名后逐字一致；Phase 4A、4B 和 Phase 4C 统计逐字保持，其中 Phase 4C 仍为
+162 输入、140 admitted。原始 bag runner 仍为四路各 873 张、873 个完整帧、8711
+条 IMU、dropped/mismatch 为 0/0、每帧 9--10 条 IMU、末尾 residual 14。
+
+visualizer 的 `--show-landmark-tracks` 仅绘制当前帧仍存在的 member 观测、假设编号
+尾号、tentative/active/stale、成员数、确认帧数和 age；不会把旧像素画到当前图像，
+也不显示虚构三维位置、深度颜色或世界轨迹。完整 873 帧 `--headless` 渲染路径已
+通过。当前 active 仍只表示 active observation-association hypothesis，绝不等于
+confirmed landmark，也没有 ground truth 正确率验证。
+
+由于 138/140 admitted 输入来自 C2-C3，且出现 104 次同相机成员竞争，下一步应先
+分析和优化跨相机匹配的持久一致性与冲突来源，再决定逆深度初始化设计；当前数据
+分布还不足以直接把这些关联假设升级为持久三维地标。
+
 当前优先级为：
 
 ```text

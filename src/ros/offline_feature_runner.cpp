@@ -7,7 +7,9 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
+#include <tuple>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,6 +21,7 @@
 #include "sphere_vio/common/camera_rig_loader.hpp"
 #include "sphere_vio/frontend/cross_camera_matcher.hpp"
 #include "sphere_vio/frontend/orb_descriptor_extractor.hpp"
+#include "sphere_vio/frontend/landmark_track_manager.hpp"
 #include "sphere_vio/frontend/triangulation_candidate_evaluator.hpp"
 #include "sphere_vio/ros/frame_assembler.hpp"
 
@@ -118,6 +121,33 @@ struct ThresholdSweepRun {
   TriangulationCandidateOptions options;
   std::vector<CandidateRunStatistics> pairs;
   CandidateRunStatistics global;
+};
+
+constexpr std::size_t kAssociationStatusCount = static_cast<std::size_t>(
+    LandmarkAssociationStatus::kCount);
+
+struct LandmarkRunStatistics {
+  std::uint64_t frames = 0U;
+  std::uint64_t admitted_candidate_inputs = 0U;
+  std::uint64_t created = 0U;
+  std::uint64_t attached_members = 0U;
+  std::uint64_t updated_existing = 0U;
+  std::uint64_t association_conflicts = 0U;
+  std::array<std::uint64_t, kAssociationStatusCount> status_counts{{}};
+  std::uint64_t activation_events = 0U;
+  std::uint64_t stale_events = 0U;
+  std::uint64_t retirement_events = 0U;
+  std::size_t maximum_simultaneous_live_tracks = 0U;
+  std::uint64_t frames_with_new_tracks = 0U;
+  std::uint64_t consecutive_frames_without_new_tracks = 0U;
+  std::uint64_t longest_frames_without_new_tracks = 0U;
+  std::uint64_t current_c2_c3_candidate_streak = 0U;
+  std::uint64_t longest_c2_c3_candidate_streak = 0U;
+  std::map<std::pair<CameraId, CameraId>, std::uint64_t> admitted_by_pair;
+  std::map<std::tuple<CameraId, FeatureId, CameraId, FeatureId>,
+           std::uint64_t> feature_pair_confirmations;
+  double processing_time_sum = 0.0;
+  double maximum_processing_time = 0.0;
 };
 
 bool topicMatches(const std::string& recorded_topic,
@@ -419,6 +449,207 @@ void printCandidateStatistics(const CandidateRunStatistics& statistics,
                  metric_indent);
 }
 
+void addLandmarkFrameResult(
+    const std::vector<TriangulationCandidatePairResult>& candidates,
+    const LandmarkTrackFrameResult& result,
+    const LandmarkTrackManager& manager,
+    LandmarkRunStatistics* statistics) {
+  if (!statistics) return;
+  ++statistics->frames;
+  bool has_c2_c3_candidate = false;
+  for (const TriangulationCandidatePairResult& pair : candidates) {
+    for (const TriangulationDiagnostic& diagnostic : pair.diagnostics) {
+      if (!diagnostic.admitted) continue;
+      ++statistics->admitted_candidate_inputs;
+      const auto camera_pair = std::make_pair(
+          diagnostic.match.camera_id_1, diagnostic.match.camera_id_2);
+      ++statistics->admitted_by_pair[camera_pair];
+      if (camera_pair == std::make_pair(2U, 3U))
+        has_c2_c3_candidate = true;
+      ++statistics->feature_pair_confirmations[std::make_tuple(
+          diagnostic.match.camera_id_1, diagnostic.match.feature_id_1,
+          diagnostic.match.camera_id_2, diagnostic.match.feature_id_2)];
+    }
+  }
+  if (has_c2_c3_candidate) {
+    ++statistics->current_c2_c3_candidate_streak;
+    statistics->longest_c2_c3_candidate_streak = std::max(
+        statistics->longest_c2_c3_candidate_streak,
+        statistics->current_c2_c3_candidate_streak);
+  } else {
+    statistics->current_c2_c3_candidate_streak = 0U;
+  }
+
+  statistics->created += result.created.size();
+  statistics->activation_events += result.activated.size();
+  statistics->stale_events += result.marked_stale.size();
+  statistics->retirement_events += result.retired.size();
+  statistics->association_conflicts += result.association_conflicts;
+  for (const LandmarkAssociationResult& association : result.associations) {
+    const std::size_t status = static_cast<std::size_t>(association.status);
+    if (status < statistics->status_counts.size())
+      ++statistics->status_counts[status];
+    if (association.status ==
+            LandmarkAssociationStatus::kAttachedFirstFeature ||
+        association.status ==
+            LandmarkAssociationStatus::kAttachedSecondFeature) {
+      ++statistics->attached_members;
+    } else if (association.status ==
+               LandmarkAssociationStatus::kUpdatedExisting) {
+      ++statistics->updated_existing;
+    }
+  }
+  if (result.created.empty()) {
+    ++statistics->consecutive_frames_without_new_tracks;
+    statistics->longest_frames_without_new_tracks = std::max(
+        statistics->longest_frames_without_new_tracks,
+        statistics->consecutive_frames_without_new_tracks);
+  } else {
+    ++statistics->frames_with_new_tracks;
+    statistics->consecutive_frames_without_new_tracks = 0U;
+  }
+  statistics->maximum_simultaneous_live_tracks = std::max(
+      statistics->maximum_simultaneous_live_tracks,
+      manager.liveTrackCount());
+  statistics->processing_time_sum += result.processing_time_seconds;
+  statistics->maximum_processing_time = std::max(
+      statistics->maximum_processing_time, result.processing_time_seconds);
+}
+
+void printLandmarkSummary(const LandmarkRunStatistics& statistics,
+                          const LandmarkTrackManager& manager,
+                          std::uint64_t final_frame_index) {
+  const std::vector<LandmarkTrack> tracks = manager.allTracks();
+  std::array<std::uint64_t,
+             static_cast<std::size_t>(LandmarkTrackState::kCount)>
+      state_counts{{}};
+  std::array<std::uint64_t, 5> member_counts{{}};
+  std::map<unsigned int, std::uint64_t> camera_combinations;
+  std::vector<double> lifetimes;
+  std::vector<double> observation_counts;
+  std::vector<double> confirmation_counts;
+  std::vector<double> confirmation_frame_counts;
+  std::uint64_t single_confirmation_tracks = 0U;
+  std::uint64_t multi_confirmation_tracks = 0U;
+  std::uint64_t ever_active_tracks = 0U;
+  std::uint64_t c2_c3_only_tracks = 0U;
+  std::uint64_t c0_or_c1_tracks = 0U;
+  for (const LandmarkTrack& track : tracks) {
+    const std::size_t state = static_cast<std::size_t>(track.state);
+    if (state < state_counts.size()) ++state_counts[state];
+    const std::size_t members = track.member_features.size();
+    if (members < member_counts.size()) ++member_counts[members];
+    unsigned int mask = 0U;
+    for (const auto& member : track.member_features)
+      mask |= (1U << member.first);
+    ++camera_combinations[mask];
+    if (mask == ((1U << 2U) | (1U << 3U))) ++c2_c3_only_tracks;
+    if ((mask & ((1U << 0U) | (1U << 1U))) != 0U) ++c0_or_c1_tracks;
+    const std::uint64_t end_frame =
+        track.has_retirement_frame_index ? track.retirement_frame_index
+                                         : final_frame_index;
+    lifetimes.push_back(static_cast<double>(
+        end_frame >= track.creation_frame_index
+            ? end_frame - track.creation_frame_index + 1U
+            : 0U));
+    observation_counts.push_back(
+        static_cast<double>(track.total_observation_count));
+    confirmation_counts.push_back(
+        static_cast<double>(track.cross_camera_confirmation_count));
+    confirmation_frame_counts.push_back(
+        static_cast<double>(track.distinct_confirmation_frame_count));
+    if (track.distinct_confirmation_frame_count == 1U)
+      ++single_confirmation_tracks;
+    if (track.distinct_confirmation_frame_count >= 2U)
+      ++multi_confirmation_tracks;
+    if (track.ever_active) ++ever_active_tracks;
+  }
+  std::uint64_t repeated_feature_pairs = 0U;
+  std::uint64_t maximum_feature_pair_confirmations = 0U;
+  for (const auto& entry : statistics.feature_pair_confirmations) {
+    if (entry.second >= 2U) ++repeated_feature_pairs;
+    maximum_feature_pair_confirmations =
+        std::max(maximum_feature_pair_confirmations, entry.second);
+  }
+
+  std::cout << "\nLandmark track hypothesis summary\n"
+            << "  semantics: observation association only; not confirmed "
+               "landmarks or map points\n"
+            << "  admitted candidate inputs: "
+            << statistics.admitted_candidate_inputs << "\n"
+            << "  created tracks: " << statistics.created << "\n"
+            << "  attached new camera members: "
+            << statistics.attached_members << "\n"
+            << "  updated existing tracks: "
+            << statistics.updated_existing << "\n"
+            << "  association conflicts: "
+            << statistics.association_conflicts << "\n"
+            << "  lifecycle events activated/stale/retired: "
+            << statistics.activation_events << "/"
+            << statistics.stale_events << "/"
+            << statistics.retirement_events << "\n"
+            << "  final tentative/active/stale/retired: "
+            << state_counts[static_cast<std::size_t>(
+                   LandmarkTrackState::kTentative)] << "/"
+            << state_counts[static_cast<std::size_t>(
+                   LandmarkTrackState::kActive)] << "/"
+            << state_counts[static_cast<std::size_t>(
+                   LandmarkTrackState::kStale)] << "/"
+            << state_counts[static_cast<std::size_t>(
+                   LandmarkTrackState::kRetired)] << "\n"
+            << "  maximum simultaneous live tracks: "
+            << statistics.maximum_simultaneous_live_tracks << "\n"
+            << "  frames with new tracks: "
+            << statistics.frames_with_new_tracks << "\n"
+            << "  longest consecutive frames without new tracks: "
+            << statistics.longest_frames_without_new_tracks << "\n"
+            << "  member camera counts 2/3/4: " << member_counts[2] << "/"
+            << member_counts[3] << "/" << member_counts[4] << "\n"
+            << "  C2-C3-only tracks: " << c2_c3_only_tracks << "\n"
+            << "  tracks involving C0 or C1: " << c0_or_c1_tracks << "\n"
+            << "  single/multi confirmation-frame tracks: "
+            << single_confirmation_tracks << "/"
+            << multi_confirmation_tracks << "\n"
+            << "  tracks ever reaching active: " << ever_active_tracks
+            << "\n"
+            << "  longest consecutive frames with C2-C3 candidates: "
+            << statistics.longest_c2_c3_candidate_streak << "\n"
+            << "  repeated exact feature pairs/max confirmations: "
+            << repeated_feature_pairs << "/"
+            << maximum_feature_pair_confirmations << "\n"
+            << "  association status counts";
+  for (std::size_t index = 0U; index < statistics.status_counts.size();
+       ++index) {
+    std::cout << " "
+              << landmarkAssociationStatusName(
+                     static_cast<LandmarkAssociationStatus>(index))
+              << "=" << statistics.status_counts[index];
+  }
+  std::cout << "\n  admitted candidates by configured pair";
+  for (const auto& pair : statistics.admitted_by_pair) {
+    std::cout << " C" << pair.first.first << "-C" << pair.first.second
+              << "=" << pair.second;
+  }
+  std::cout << "\n  final member camera combinations";
+  for (const auto& combination : camera_combinations) {
+    std::cout << " mask" << combination.first << "=" << combination.second;
+  }
+  std::cout << std::endl;
+  printQuantiles("track lifetime frames", lifetimes, "  ");
+  printQuantiles("total observation count", observation_counts, "  ");
+  printQuantiles("cross-camera confirmation count", confirmation_counts,
+                 "  ");
+  printQuantiles("distinct confirmation frame count",
+                 confirmation_frame_counts, "  ");
+  const double frames = static_cast<double>(statistics.frames);
+  std::cout << "  manager processing ms avg/max="
+            << (statistics.frames == 0U
+                    ? 0.0
+                    : 1000.0 * statistics.processing_time_sum / frames)
+            << "/" << 1000.0 * statistics.maximum_processing_time
+            << std::endl;
+}
+
 }  // namespace
 
 OfflineFeatureRunner::OfflineFeatureRunner(OfflineFeatureRunnerOptions options)
@@ -477,6 +708,7 @@ int OfflineFeatureRunner::run() {
   std::unique_ptr<OrbDescriptorExtractor> descriptor_extractor;
   std::unique_ptr<CrossCameraMatcher> cross_camera_matcher;
   std::unique_ptr<TriangulationCandidateEvaluator> candidate_evaluator;
+  std::unique_ptr<LandmarkTrackManager> landmark_track_manager;
   if (options_.cross_camera_matching) {
     descriptor_extractor.reset(new OrbDescriptorExtractor(options_.descriptor));
     cross_camera_matcher.reset(new CrossCameraMatcher(options_.matcher));
@@ -485,6 +717,10 @@ int OfflineFeatureRunner::run() {
     candidate_evaluator.reset(new TriangulationCandidateEvaluator(
         options_.triangulation_candidate));
   }
+  if (options_.landmark_tracks) {
+    landmark_track_manager.reset(
+        new LandmarkTrackManager(options_.landmark_track));
+  }
   std::array<CameraRunStatistics, 4> run_statistics;
   std::array<DescriptorRunStatistics, 4> descriptor_statistics;
   std::vector<PairRunStatistics> pair_statistics(
@@ -492,6 +728,7 @@ int OfflineFeatureRunner::run() {
   std::vector<CandidateRunStatistics> candidate_pair_statistics(
       options_.matcher.camera_pairs.size());
   CandidateRunStatistics global_candidate_statistics;
+  LandmarkRunStatistics landmark_statistics;
   std::vector<ThresholdSweepRun> threshold_sweeps;
   if (options_.triangulation_threshold_sweep) {
     threshold_sweeps = makeThresholdSweeps(
@@ -628,6 +865,29 @@ int OfflineFeatureRunner::run() {
                                        &sweep.global);
           }
         }
+        if (landmark_track_manager) {
+          LandmarkTrackFrameInput landmark_input;
+          landmark_input.timestamp = frame.timestamp;
+          landmark_input.frame_index = completed_frames;
+          landmark_input.camera_tracking = tracking_result.cameras;
+          for (const TriangulationCandidatePairResult& pair :
+               candidate_results) {
+            landmark_input.triangulation_diagnostics.insert(
+                landmark_input.triangulation_diagnostics.end(),
+                pair.diagnostics.begin(), pair.diagnostics.end());
+          }
+          LandmarkTrackFrameResult landmark_result;
+          if (!landmark_track_manager->processFrame(landmark_input,
+                                                    &landmark_result)) {
+            std::cerr << "Landmark track management failed at frame "
+                      << completed_frames << std::endl;
+            bag.close();
+            return 7;
+          }
+          addLandmarkFrameResult(candidate_results, landmark_result,
+                                 *landmark_track_manager,
+                                 &landmark_statistics);
+        }
         const double cross_camera_processing_time =
             std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                           cross_camera_start)
@@ -664,6 +924,11 @@ int OfflineFeatureRunner::run() {
                       << pair.camera_id_2 << "=" << pair.candidates.size();
           }
           std::cout << std::endl;
+        }
+        if (landmark_track_manager) {
+          std::cout << "  live landmark hypotheses="
+                    << landmark_track_manager->liveTrackCount()
+                    << " (observation association only)" << std::endl;
         }
       }
       break;
@@ -817,6 +1082,10 @@ int OfflineFeatureRunner::run() {
         }
         printCandidateStatistics(sweep.global, "GLOBAL", "    ", false);
       }
+    }
+    if (options_.landmark_tracks && landmark_track_manager) {
+      printLandmarkSummary(landmark_statistics, *landmark_track_manager,
+                           completed_frames);
     }
   }
   return completed_frames == 0U ? 7 : 0;

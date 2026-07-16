@@ -22,6 +22,7 @@ struct CommandLineOptions {
   bool cross_camera_matching = false;
   bool triangulation_candidates = false;
   bool triangulation_threshold_sweep = false;
+  bool landmark_tracks = false;
 };
 
 void printUsage() {
@@ -35,6 +36,7 @@ void printUsage() {
          "  --cross-camera-matching  Enable configured overlap-pair matching\n"
          "  --triangulation-candidates  Evaluate current-frame geometric candidates\n"
          "  --triangulation-threshold-sweep  Add single-variable gate scans\n"
+         "  --landmark-tracks  Enable observation-association hypotheses\n"
          "  --help                 Show this message"
       << std::endl;
 }
@@ -73,6 +75,12 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
     }
     if (argument == "--triangulation-threshold-sweep") {
       options->triangulation_threshold_sweep = true;
+      options->triangulation_candidates = true;
+      options->cross_camera_matching = true;
+      continue;
+    }
+    if (argument == "--landmark-tracks") {
+      options->landmark_tracks = true;
       options->triangulation_candidates = true;
       options->cross_camera_matching = true;
       continue;
@@ -158,6 +166,7 @@ int main(int argc, char** argv) {
   options.triangulation_candidates = command_line.triangulation_candidates;
   options.triangulation_threshold_sweep =
       command_line.triangulation_threshold_sweep;
+  options.landmark_tracks = command_line.landmark_tracks;
   if (options.cross_camera_matching &&
       !sphere_vio::loadCrossCameraOptions(
           frontend_config, &options.descriptor, &options.matcher, &error)) {
@@ -168,6 +177,13 @@ int main(int argc, char** argv) {
       !sphere_vio::loadTriangulationCandidateOptions(
           frontend_config, &options.triangulation_candidate, &error)) {
     std::cerr << "Invalid triangulation candidate configuration: " << error
+              << std::endl;
+    return EXIT_FAILURE;
+  }
+  if (options.landmark_tracks &&
+      !sphere_vio::loadLandmarkTrackManagerOptions(
+          frontend_config, &options.landmark_track, &error)) {
+    std::cerr << "Invalid landmark track configuration: " << error
               << std::endl;
     return EXIT_FAILURE;
   }
