@@ -22,6 +22,7 @@
 
 #include "sphere_vio/imu_interval_buffer.hpp"
 #include "sphere_vio/common/camera_rig_loader.hpp"
+#include "sphere_vio/geometry/epipolar_geometry.hpp"
 #include "sphere_vio/geometry/spherical_geometry.hpp"
 #include "sphere_vio/ros/frame_assembler.hpp"
 #include "sphere_vio/ros/ros_conversions.hpp"
@@ -63,6 +64,14 @@ struct VisualizerStatistics {
   bool has_frame = false;
   Timestamp first_frame_time = 0.0;
   Timestamp last_frame_time = 0.0;
+};
+
+struct EpipolarCurveOverlay {
+  CameraId source_camera = 0U;
+  CameraId target_camera = 1U;
+  Eigen::Vector2d source_pixel = Eigen::Vector2d::Zero();
+  std::vector<std::vector<cv::Point>> target_segments;
+  std::size_t projected_sample_count = 0U;
 };
 
 bool topicMatches(const std::string& recorded_topic,
@@ -242,6 +251,139 @@ bool buildSphericalCoveragePanel(const std::string& camera_config_file,
   return true;
 }
 
+bool buildEpipolarCurveOverlay(
+    const OfflineBagVisualizerOptions& options, EpipolarCurveOverlay* overlay,
+    std::string* error) {
+  if (!overlay || options.epipolar_source_camera < 0 ||
+      options.epipolar_source_camera > 3 ||
+      options.epipolar_target_camera < 0 ||
+      options.epipolar_target_camera > 3 ||
+      options.epipolar_source_camera == options.epipolar_target_camera) {
+    if (error) *error = "invalid epipolar camera selection";
+    return false;
+  }
+  CameraRig rig;
+  if (!loadCameraRigFromYaml(options.camera_config_file, &rig, error)) {
+    return false;
+  }
+  const CameraId source_id =
+      static_cast<CameraId>(options.epipolar_source_camera);
+  const CameraId target_id =
+      static_cast<CameraId>(options.epipolar_target_camera);
+  const RigCamera* source = rig.camera(source_id);
+  const RigCamera* target = rig.camera(target_id);
+  if (!source || !target) {
+    if (error) *error = "epipolar camera is missing from the rig";
+    return false;
+  }
+
+  EpipolarCurveOverlay result;
+  result.source_camera = source_id;
+  result.target_camera = target_id;
+  result.source_pixel.x() =
+      options.epipolar_source_u >= 0.0
+          ? options.epipolar_source_u
+          : 0.5 * static_cast<double>(source->model->width() - 1);
+  result.source_pixel.y() =
+      options.epipolar_source_v >= 0.0
+          ? options.epipolar_source_v
+          : 0.5 * static_cast<double>(source->model->height() - 1);
+
+  Eigen::Vector3d bearing_source;
+  if (!source->model->unproject(result.source_pixel, &bearing_source)) {
+    if (error) *error = "source pixel is outside the calibrated model domain";
+    return false;
+  }
+  RelativePose relative_pose;
+  if (!relativeCameraPose(*source, *target, &relative_pose)) {
+    if (error) *error = "cannot compute non-degenerate relative camera pose";
+    return false;
+  }
+  Eigen::Vector3d plane_normal_target;
+  if (!epipolarPlaneNormal(bearing_source, relative_pose.R_target_source,
+                           relative_pose.t_target_source,
+                           &plane_normal_target)) {
+    if (error) *error = "source ray produces a degenerate epipolar plane";
+    return false;
+  }
+  std::vector<Eigen::Vector3d> great_circle;
+  if (!sampleGreatCircle(plane_normal_target, 1440U, &great_circle)) {
+    if (error) *error = "cannot sample the target epipolar great circle";
+    return false;
+  }
+
+  std::vector<cv::Point> current_segment;
+  cv::Point previous_point;
+  bool has_previous = false;
+  const double maximum_pixel_step = 40.0;
+  const auto finish_segment = [&]() {
+    if (current_segment.size() >= 2U) {
+      result.target_segments.push_back(current_segment);
+    }
+    current_segment.clear();
+    has_previous = false;
+  };
+  for (const Eigen::Vector3d& bearing_target : great_circle) {
+    Eigen::Vector2d target_pixel;
+    if (!target->model->project(bearing_target, &target_pixel)) {
+      finish_segment();
+      continue;
+    }
+    const cv::Point point(static_cast<int>(std::lround(target_pixel.x())),
+                          static_cast<int>(std::lround(target_pixel.y())));
+    if (has_previous && cv::norm(point - previous_point) > maximum_pixel_step) {
+      finish_segment();
+    }
+    current_segment.push_back(point);
+    previous_point = point;
+    has_previous = true;
+    ++result.projected_sample_count;
+  }
+  finish_segment();
+  if (result.target_segments.empty()) {
+    if (error) *error = "epipolar great circle is not visible in target model";
+    return false;
+  }
+  *overlay = std::move(result);
+  return true;
+}
+
+void drawEpipolarOverlay(CameraId camera_id,
+                         const EpipolarCurveOverlay& overlay,
+                         cv::Mat* image) {
+  if (!image || image->empty()) return;
+  const cv::Scalar curve_color(60, 80, 255);
+  if (camera_id == overlay.source_camera) {
+    const cv::Point source_point(
+        static_cast<int>(std::lround(overlay.source_pixel.x())),
+        static_cast<int>(std::lround(overlay.source_pixel.y())));
+    cv::circle(*image, source_point, 9, curve_color, 2, cv::LINE_AA);
+    cv::line(*image, source_point + cv::Point(-13, 0),
+             source_point + cv::Point(13, 0), curve_color, 1, cv::LINE_AA);
+    cv::line(*image, source_point + cv::Point(0, -13),
+             source_point + cv::Point(0, 13), curve_color, 1, cv::LINE_AA);
+  } else if (camera_id == overlay.target_camera) {
+    for (const std::vector<cv::Point>& segment : overlay.target_segments) {
+      cv::polylines(*image, segment, false, curve_color, 2, cv::LINE_AA);
+    }
+  } else {
+    return;
+  }
+
+  const int label_y = std::max(25, image->rows - 90);
+  drawTextWithShadow(image, "SPHERICAL EPIPOLAR CURVE",
+                     cv::Point(12, label_y),
+                     0.55, curve_color);
+  drawTextWithShadow(
+      image,
+      "SOURCE C" + std::to_string(overlay.source_camera) + " -> TARGET C" +
+          std::to_string(overlay.target_camera),
+      cv::Point(12, label_y + 28), 0.48, cv::Scalar(255, 255, 255));
+  drawTextWithShadow(image, "NO FEATURE MATCHING | NO DEPTH ESTIMATION",
+                     cv::Point(12, label_y + 56), 0.45,
+                     cv::Scalar(80, 190, 255));
+}
+
 void appendSphericalCoveragePanel(const cv::Mat& panel, cv::Mat* canvas) {
   if (!canvas || canvas->empty() || panel.empty()) return;
   cv::Mat displayed_panel = panel;
@@ -313,6 +455,7 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
                  double imu_gap_warning, bool paused, cv::Mat* canvas,
                  IntervalDisplayStatistics* interval_statistics,
                  const cv::Mat* spherical_coverage_panel,
+                 const EpipolarCurveOverlay* epipolar_curve_overlay,
                  std::string* error) {
   if (!canvas || !interval_statistics) return false;
   if (frame.images.size() != FrameAssembler::kCameraCount) {
@@ -362,6 +505,10 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
                  std::to_string(camera_id);
       }
       return false;
+    }
+    if (epipolar_curve_overlay) {
+      drawEpipolarOverlay(static_cast<CameraId>(camera_id),
+                          *epipolar_curve_overlay, &bgr);
     }
     cv::Mat resized;
     const cv::Size scaled_size(
@@ -625,6 +772,27 @@ int OfflineBagVisualizer::run() {
     }
   }
 
+  EpipolarCurveOverlay epipolar_curve_overlay;
+  if (options_.show_epipolar_curve) {
+    std::string curve_error;
+    std::cout << "Precomputing spherical epipolar curve from: "
+              << options_.camera_config_file << std::endl;
+    if (!buildEpipolarCurveOverlay(options_, &epipolar_curve_overlay,
+                                   &curve_error)) {
+      std::cerr << "Cannot build spherical epipolar curve: " << curve_error
+                << std::endl;
+      return 2;
+    }
+    std::cout << "  epipolar curve C" << epipolar_curve_overlay.source_camera
+              << " -> C" << epipolar_curve_overlay.target_camera
+              << ", source pixel=["
+              << epipolar_curve_overlay.source_pixel.transpose()
+              << "], projected samples="
+              << epipolar_curve_overlay.projected_sample_count
+              << ", continuous segments="
+              << epipolar_curve_overlay.target_segments.size() << std::endl;
+  }
+
   rosbag::Bag bag;
   try {
     bag.open(options_.bag.bag_path, rosbag::bagmode::Read);
@@ -672,6 +840,10 @@ int OfflineBagVisualizer::run() {
   std::cout << "\n  IMU: " << options_.bag.imu_topic << std::endl;
   if (options_.show_spherical_coverage) {
     std::cout << "  spherical coverage: enabled (sparse bearings only)"
+              << std::endl;
+  }
+  if (options_.show_epipolar_curve) {
+    std::cout << "  spherical epipolar curve: enabled (geometry only)"
               << std::endl;
   }
 
@@ -722,6 +894,9 @@ int OfflineBagVisualizer::run() {
                      playback.paused(), &canvas, &interval_statistics,
                      options_.show_spherical_coverage
                          ? &spherical_coverage_panel
+                         : nullptr,
+                     options_.show_epipolar_curve
+                         ? &epipolar_curve_overlay
                          : nullptr,
                      &render_error)) {
       std::cerr << "Cannot render frame: " << render_error << std::endl;

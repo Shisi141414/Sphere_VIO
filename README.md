@@ -90,3 +90,20 @@ Add the optional sparse Body-bearing ERP coverage panel with:
 The panel uses `config/cameras.yaml` by default, plots only calibrated sparse
 bearing samples, and performs no image stitching or depth estimation. Use
 `--cameras FILE` to select another camera calibration explicitly.
+
+Draw a calibrated spherical epipolar curve for one selected source pixel with:
+
+```bash
+/root/catkin_ws/devel/lib/sphere_vio/sphere_vio_bag_visualizer \
+  --config /root/catkin_ws/src/sphere_vio/config/offline.yaml \
+  --bag /absolute/path/to/data.bag \
+  --show-epipolar-curve \
+  --epipolar-source-camera 0 \
+  --epipolar-target-camera 1 \
+  --epipolar-source-u 544 \
+  --epipolar-source-v 440
+```
+
+The curve is computed from calibration and a source bearing only. It does not
+perform feature matching, triangulation, or depth estimation. Omitting the
+source pixel coordinates uses the geometric image center.

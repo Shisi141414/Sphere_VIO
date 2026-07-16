@@ -153,6 +153,7 @@ add_library(sphere_vio_camera
 target_link_libraries(sphere_vio_camera yaml-cpp)
 
 add_library(sphere_vio_geometry
+  src/geometry/epipolar_geometry.cpp
   src/geometry/spherical_geometry.cpp
 )
 
@@ -346,6 +347,20 @@ if(CATKIN_ENABLE_TESTING)
       SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     target_link_libraries(test_spherical_geometry
+      sphere_vio_geometry
+      sphere_vio_camera
+      yaml-cpp
+    )
+  endif()
+  catkin_add_gtest(test_epipolar_geometry
+    test/test_main.cpp
+    test/test_epipolar_geometry.cpp
+  )
+  if(TARGET test_epipolar_geometry)
+    target_compile_definitions(test_epipolar_geometry PRIVATE
+      SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_epipolar_geometry
       sphere_vio_geometry
       sphere_vio_camera
       yaml-cpp

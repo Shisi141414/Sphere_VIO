@@ -19,7 +19,12 @@ struct CommandLineOptions {
   bool has_start_offset = false;
   bool has_duration = false;
   bool show_spherical_coverage = false;
+  bool show_epipolar_curve = false;
   std::string camera_config_file;
+  int epipolar_source_camera = 0;
+  int epipolar_target_camera = 1;
+  double epipolar_source_u = -1.0;
+  double epipolar_source_v = -1.0;
 };
 
 void printUsage() {
@@ -31,7 +36,12 @@ void printUsage() {
          "  --duration SECONDS       Negative means through bag end\n"
          "  --imu-gap-warning SEC    Display warning threshold (default: 0.008)\n"
          "  --show-spherical-coverage  Add sparse Body-bearing ERP panel\n"
-         "  --cameras FILE           Camera calibration YAML for coverage\n"
+         "  --cameras FILE           Camera YAML for geometry overlays\n"
+         "  --show-epipolar-curve   Draw a calibrated spherical epipolar curve\n"
+         "  --epipolar-source-camera ID  Source camera C0..C3 (default: 0)\n"
+         "  --epipolar-target-camera ID  Target camera C0..C3 (default: 1)\n"
+         "  --epipolar-source-u VALUE    Source pixel u (default: image center)\n"
+         "  --epipolar-source-v VALUE    Source pixel v (default: image center)\n"
          "  --help                   Show this message"
       << std::endl;
 }
@@ -43,6 +53,19 @@ bool parseDouble(const std::string& text, double* value) {
     const double parsed = std::stod(text, &consumed);
     if (consumed != text.size() || !std::isfinite(parsed)) return false;
     *value = parsed;
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
+bool parseCameraId(const std::string& text, int* camera_id) {
+  if (!camera_id) return false;
+  try {
+    std::size_t consumed = 0;
+    const int parsed = std::stoi(text, &consumed);
+    if (consumed != text.size() || parsed < 0 || parsed > 3) return false;
+    *camera_id = parsed;
     return true;
   } catch (const std::exception&) {
     return false;
@@ -61,6 +84,10 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
     }
     if (argument == "--show-spherical-coverage") {
       options->show_spherical_coverage = true;
+      continue;
+    }
+    if (argument == "--show-epipolar-curve") {
+      options->show_epipolar_curve = true;
       continue;
     }
     if (index + 1 >= argc) {
@@ -96,6 +123,26 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       }
     } else if (argument == "--cameras") {
       options->camera_config_file = value;
+    } else if (argument == "--epipolar-source-camera") {
+      if (!parseCameraId(value, &options->epipolar_source_camera)) {
+        if (error) *error = "invalid source camera id: " + value;
+        return false;
+      }
+    } else if (argument == "--epipolar-target-camera") {
+      if (!parseCameraId(value, &options->epipolar_target_camera)) {
+        if (error) *error = "invalid target camera id: " + value;
+        return false;
+      }
+    } else if (argument == "--epipolar-source-u") {
+      if (!parseDouble(value, &options->epipolar_source_u)) {
+        if (error) *error = "invalid source pixel u: " + value;
+        return false;
+      }
+    } else if (argument == "--epipolar-source-v") {
+      if (!parseDouble(value, &options->epipolar_source_v)) {
+        if (error) *error = "invalid source pixel v: " + value;
+        return false;
+      }
     } else {
       if (error) *error = "unknown argument: " + argument;
       return false;
@@ -115,6 +162,21 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
   }
   if (options->has_start_offset && options->start_offset < 0.0) {
     if (error) *error = "--start-offset cannot be negative";
+    return false;
+  }
+  if (options->show_epipolar_curve &&
+      options->epipolar_source_camera == options->epipolar_target_camera) {
+    if (error) *error = "epipolar source and target cameras must differ";
+    return false;
+  }
+  if (options->epipolar_source_u < 0.0 &&
+      options->epipolar_source_u != -1.0) {
+    if (error) *error = "epipolar source u cannot be negative";
+    return false;
+  }
+  if (options->epipolar_source_v < 0.0 &&
+      options->epipolar_source_v != -1.0) {
+    if (error) *error = "epipolar source v cannot be negative";
     return false;
   }
   return true;
@@ -161,9 +223,14 @@ int main(int argc, char** argv) {
   options.playback_rate = command_line.playback_rate;
   options.imu_gap_warning = command_line.imu_gap_warning;
   options.show_spherical_coverage = command_line.show_spherical_coverage;
+  options.show_epipolar_curve = command_line.show_epipolar_curve;
   options.camera_config_file = command_line.camera_config_file.empty()
                                    ? siblingCameraConfigPath(
                                          command_line.config_file)
                                    : command_line.camera_config_file;
+  options.epipolar_source_camera = command_line.epipolar_source_camera;
+  options.epipolar_target_camera = command_line.epipolar_target_camera;
+  options.epipolar_source_u = command_line.epipolar_source_u;
+  options.epipolar_source_v = command_line.epipolar_source_v;
   return sphere_vio::OfflineBagVisualizer(std::move(options)).run();
 }

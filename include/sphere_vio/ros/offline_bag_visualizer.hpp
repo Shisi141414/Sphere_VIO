@@ -11,7 +11,12 @@ struct OfflineBagVisualizerOptions {
   double playback_rate = 1.0;
   double imu_gap_warning = 0.008;
   bool show_spherical_coverage = false;
+  bool show_epipolar_curve = false;
   std::string camera_config_file;
+  int epipolar_source_camera = 0;
+  int epipolar_target_camera = 1;
+  double epipolar_source_u = -1.0;
+  double epipolar_source_v = -1.0;
 };
 
 class OfflineBagVisualizer {
