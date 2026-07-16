@@ -397,16 +397,18 @@ double epipolarAngularError(
 ```cpp
 struct TriangulationResult {
     bool valid = false;
-    Eigen::Vector3d point_w = Eigen::Vector3d::Zero();
+    TriangulationStatus status = TriangulationStatus::kInvalidInput;
+    Eigen::Vector3d point_common = Eigen::Vector3d::Zero();
     double depth_1 = 0.0;
     double depth_2 = 0.0;
     double ray_angle = 0.0;
     double closest_ray_distance = 0.0;
-    double reprojection_error = 0.0;
+    double maximum_angular_reprojection_error = 0.0;
 };
 ```
 
-三角化后必须检查：正深度、射线夹角、最近距离和重投影误差。
+`point_common` 的坐标系由接口明确指定，不能在没有世界位姿时命名为
+`point_w`。三角化后必须检查：正深度、射线夹角、最近距离和重投影误差。
 
 ---
 
@@ -935,8 +937,39 @@ n_hat = normalize(t_2_1.cross(R_2_1 * bearing_1))
 
 当前验证只使用解析合成点以及真实四目内外参生成的合成可见对应点，尚未使用
 真实图像特征对应。visualizer 的可选 `--show-epipolar-curve` 模式只把标定
-计算的大圆有效部分投影到目标相机，不寻找对应点。当前仍未实现自动匹配、
-三角化、深度或逆深度。
+计算的大圆有效部分投影到目标相机，不寻找对应点。Phase 3A 当时尚未实现
+自动匹配、三角化、深度或逆深度。
+
+Phase 3B：两视图球面三角化已实现。通用接口在调用方指定的公共坐标系中表示
+两条射线：
+
+```text
+p_1(lambda_1) = origin_1 + lambda_1 * direction_1
+p_2(lambda_2) = origin_2 + lambda_2 * direction_2
+```
+
+实现构造 `A=[direction_1,-direction_2]` 和 `b=origin_2-origin_1`，使用
+`Eigen::ColPivHouseholderQR` 求最小二乘深度，不显式计算法方程逆矩阵。两条
+最近射线点的中点作为 `point_common`。相对位姿包装输出目标相机 C2 坐标，
+CameraRig 包装把相机 bearing 旋转到 Body 并输出 `point_b`（保存在明确标记为
+Body 的 `point_common`）。
+
+`depth_1` 和 `depth_2` 是沿归一化 bearing 的射线参数，正深度检查直接比较
+两个 lambda，不能用点的 z 坐标代替，因为全向相机的有效射线可以具有负 z。
+`ray_angle=acos(clamp(direction_1.dot(direction_2),-1,1))`；接近平行或反平行
+时两射线深度病态，由 `minimum_ray_angle` 拒绝。深距离通常对应更小视差角，
+相同角噪声会产生更大的深度误差。
+
+噪声射线一般不严格相交，`closest_ray_distance` 是两个最接近射线点之间的
+欧氏距离。恢复中点分别指回两个相机中心后，与输入 bearing 计算球面角距离，
+得到两路 angular reprojection error。最近距离、最大角重投影误差、最小
+baseline、最小 ray angle 和最小 depth 都由 `TriangulationOptions` 配置，
+当前没有固定最终真实匹配阈值。
+
+全向 OmniRadtan 不满足已校正水平针孔双目的假设，因此没有使用
+`focal_length*baseline/disparity`，也不把横向像素差当作视差。当前只通过
+解析交点和真实四目内外参生成的合成对应验证；尚未接入自动真实图像匹配、
+逆深度滤波、多帧优化或 VIO。
 
 当前优先级为：
 

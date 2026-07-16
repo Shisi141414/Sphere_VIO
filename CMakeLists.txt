@@ -155,6 +155,7 @@ target_link_libraries(sphere_vio_camera yaml-cpp)
 add_library(sphere_vio_geometry
   src/geometry/epipolar_geometry.cpp
   src/geometry/spherical_geometry.cpp
+  src/geometry/triangulation.cpp
 )
 
 add_library(sphere_vio_ros
@@ -361,6 +362,20 @@ if(CATKIN_ENABLE_TESTING)
       SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     target_link_libraries(test_epipolar_geometry
+      sphere_vio_geometry
+      sphere_vio_camera
+      yaml-cpp
+    )
+  endif()
+  catkin_add_gtest(test_triangulation
+    test/test_main.cpp
+    test/test_triangulation.cpp
+  )
+  if(TARGET test_triangulation)
+    target_compile_definitions(test_triangulation PRIVATE
+      SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_triangulation
       sphere_vio_geometry
       sphere_vio_camera
       yaml-cpp
