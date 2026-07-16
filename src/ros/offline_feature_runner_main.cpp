@@ -20,6 +20,8 @@ struct CommandLineOptions {
   bool has_start_offset = false;
   bool has_duration = false;
   bool cross_camera_matching = false;
+  bool triangulation_candidates = false;
+  bool triangulation_threshold_sweep = false;
 };
 
 void printUsage() {
@@ -31,6 +33,8 @@ void printUsage() {
          "  --start-offset SEC     Offset from bag start\n"
          "  --duration SEC         Negative means through bag end\n"
          "  --cross-camera-matching  Enable configured overlap-pair matching\n"
+         "  --triangulation-candidates  Evaluate current-frame geometric candidates\n"
+         "  --triangulation-threshold-sweep  Add single-variable gate scans\n"
          "  --help                 Show this message"
       << std::endl;
 }
@@ -59,6 +63,17 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       return true;
     }
     if (argument == "--cross-camera-matching") {
+      options->cross_camera_matching = true;
+      continue;
+    }
+    if (argument == "--triangulation-candidates") {
+      options->triangulation_candidates = true;
+      options->cross_camera_matching = true;
+      continue;
+    }
+    if (argument == "--triangulation-threshold-sweep") {
+      options->triangulation_threshold_sweep = true;
+      options->triangulation_candidates = true;
       options->cross_camera_matching = true;
       continue;
     }
@@ -140,10 +155,20 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   options.cross_camera_matching = command_line.cross_camera_matching;
+  options.triangulation_candidates = command_line.triangulation_candidates;
+  options.triangulation_threshold_sweep =
+      command_line.triangulation_threshold_sweep;
   if (options.cross_camera_matching &&
       !sphere_vio::loadCrossCameraOptions(
           frontend_config, &options.descriptor, &options.matcher, &error)) {
     std::cerr << "Invalid cross-camera configuration: " << error << std::endl;
+    return EXIT_FAILURE;
+  }
+  if (options.triangulation_candidates &&
+      !sphere_vio::loadTriangulationCandidateOptions(
+          frontend_config, &options.triangulation_candidate, &error)) {
+    std::cerr << "Invalid triangulation candidate configuration: " << error
+              << std::endl;
     return EXIT_FAILURE;
   }
   options.camera_config_file =

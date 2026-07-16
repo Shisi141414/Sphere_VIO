@@ -19,6 +19,7 @@
 #include "sphere_vio/common/camera_rig_loader.hpp"
 #include "sphere_vio/frontend/cross_camera_matcher.hpp"
 #include "sphere_vio/frontend/orb_descriptor_extractor.hpp"
+#include "sphere_vio/frontend/triangulation_candidate_evaluator.hpp"
 #include "sphere_vio/ros/frame_assembler.hpp"
 
 namespace sphere_vio {
@@ -79,6 +80,44 @@ struct PairRunStatistics {
   std::uint64_t rejected_duplicate = 0U;
   double processing_time_sum = 0.0;
   double maximum_processing_time = 0.0;
+};
+
+constexpr std::size_t kCandidateStatusCount = static_cast<std::size_t>(
+    TriangulationCandidateStatus::kCount);
+
+struct CandidateMetricSamples {
+  std::vector<double> ray_angle;
+  std::vector<double> minimum_depth;
+  std::vector<double> maximum_depth;
+  std::vector<double> closest_distance;
+  std::vector<double> closest_to_baseline_ratio;
+  std::vector<double> angular_reprojection_error;
+};
+
+struct CandidateRunStatistics {
+  CameraId camera_id_1 = 0U;
+  CameraId camera_id_2 = 0U;
+  std::uint64_t frames = 0U;
+  std::uint64_t input_matches = 0U;
+  std::uint64_t triangulation_successes = 0U;
+  std::uint64_t admitted = 0U;
+  std::size_t minimum_admitted = std::numeric_limits<std::size_t>::max();
+  std::size_t maximum_admitted = 0U;
+  std::array<std::uint64_t, kCandidateStatusCount> status_counts{{}};
+  std::uint64_t frames_with_candidates = 0U;
+  std::uint64_t consecutive_frames_without_candidates = 0U;
+  std::uint64_t longest_frames_without_candidates = 0U;
+  double processing_time_sum = 0.0;
+  double maximum_processing_time = 0.0;
+  CandidateMetricSamples metrics;
+};
+
+struct ThresholdSweepRun {
+  std::string parameter;
+  double value = 0.0;
+  TriangulationCandidateOptions options;
+  std::vector<CandidateRunStatistics> pairs;
+  CandidateRunStatistics global;
 };
 
 bool topicMatches(const std::string& recorded_topic,
@@ -175,6 +214,211 @@ void addPairResult(const CrossCameraPairResult& result,
                result.processing_time_seconds);
 }
 
+void addGeometryMetrics(const TriangulationDiagnostic& diagnostic,
+                        CandidateMetricSamples* samples) {
+  if (!samples || !diagnostic.triangulation_succeeded) return;
+  samples->ray_angle.push_back(diagnostic.ray_angle);
+  samples->minimum_depth.push_back(diagnostic.minimum_depth);
+  samples->maximum_depth.push_back(diagnostic.maximum_depth);
+  samples->closest_distance.push_back(diagnostic.closest_ray_distance);
+  samples->closest_to_baseline_ratio.push_back(
+      diagnostic.closest_distance_to_baseline_ratio);
+  samples->angular_reprojection_error.push_back(
+      diagnostic.maximum_angular_reprojection_error);
+}
+
+void addCandidateResult(const TriangulationCandidatePairResult& result,
+                        bool count_frame,
+                        CandidateRunStatistics* statistics) {
+  if (!statistics) return;
+  if (count_frame) {
+    statistics->camera_id_1 = result.camera_id_1;
+    statistics->camera_id_2 = result.camera_id_2;
+    ++statistics->frames;
+  }
+  statistics->input_matches += result.input_matches;
+  statistics->triangulation_successes += result.triangulation_successes;
+  statistics->admitted += result.candidates.size();
+  for (const TriangulationDiagnostic& diagnostic : result.diagnostics) {
+    const std::size_t status = static_cast<std::size_t>(diagnostic.status);
+    if (status < statistics->status_counts.size())
+      ++statistics->status_counts[status];
+    addGeometryMetrics(diagnostic, &statistics->metrics);
+  }
+  statistics->processing_time_sum += result.processing_time_seconds;
+  statistics->maximum_processing_time =
+      std::max(statistics->maximum_processing_time,
+               result.processing_time_seconds);
+  if (count_frame) {
+    statistics->minimum_admitted =
+        std::min(statistics->minimum_admitted, result.candidates.size());
+    statistics->maximum_admitted =
+        std::max(statistics->maximum_admitted, result.candidates.size());
+    if (result.candidates.empty()) {
+      ++statistics->consecutive_frames_without_candidates;
+      statistics->longest_frames_without_candidates = std::max(
+          statistics->longest_frames_without_candidates,
+          statistics->consecutive_frames_without_candidates);
+    } else {
+      ++statistics->frames_with_candidates;
+      statistics->consecutive_frames_without_candidates = 0U;
+    }
+  }
+}
+
+void finishGlobalCandidateFrame(std::size_t admitted_in_frame,
+                                CandidateRunStatistics* statistics) {
+  if (!statistics) return;
+  ++statistics->frames;
+  statistics->minimum_admitted =
+      std::min(statistics->minimum_admitted, admitted_in_frame);
+  statistics->maximum_admitted =
+      std::max(statistics->maximum_admitted, admitted_in_frame);
+  if (admitted_in_frame == 0U) {
+    ++statistics->consecutive_frames_without_candidates;
+    statistics->longest_frames_without_candidates = std::max(
+        statistics->longest_frames_without_candidates,
+        statistics->consecutive_frames_without_candidates);
+  } else {
+    ++statistics->frames_with_candidates;
+    statistics->consecutive_frames_without_candidates = 0U;
+  }
+}
+
+std::vector<ThresholdSweepRun> makeThresholdSweeps(
+    const TriangulationCandidateOptions& base,
+    std::size_t pair_count) {
+  std::vector<ThresholdSweepRun> sweeps;
+  const auto append = [&](const std::string& parameter, double value,
+                          const TriangulationCandidateOptions& options) {
+    ThresholdSweepRun sweep;
+    sweep.parameter = parameter;
+    sweep.value = value;
+    sweep.options = options;
+    sweep.pairs.resize(pair_count);
+    sweeps.push_back(std::move(sweep));
+  };
+  for (const double value :
+       std::array<double, 5>{{0.001, 0.002, 0.003, 0.005, 0.010}}) {
+    TriangulationCandidateOptions options = base;
+    options.minimum_ray_angle = value;
+    append("minimum_ray_angle", value, options);
+  }
+  for (const double value :
+       std::array<double, 4>{{0.005, 0.010, 0.020, 0.050}}) {
+    TriangulationCandidateOptions options = base;
+    options.maximum_closest_ray_distance = value;
+    append("maximum_closest_ray_distance", value, options);
+  }
+  for (const double value :
+       std::array<double, 4>{{0.001, 0.002, 0.003, 0.005}}) {
+    TriangulationCandidateOptions options = base;
+    options.maximum_angular_reprojection_error = value;
+    append("maximum_angular_reprojection_error", value, options);
+  }
+  return sweeps;
+}
+
+TriangulationCandidatePairResult readmitPair(
+    const TriangulationCandidatePairResult& geometry,
+    const TriangulationCandidateOptions& options) {
+  TriangulationCandidatePairResult result;
+  result.camera_id_1 = geometry.camera_id_1;
+  result.camera_id_2 = geometry.camera_id_2;
+  result.input_matches = geometry.input_matches;
+  result.triangulation_successes = geometry.triangulation_successes;
+  result.diagnostics = geometry.diagnostics;
+  for (TriangulationDiagnostic& diagnostic : result.diagnostics) {
+    if (!applyTriangulationCandidateAdmission(options, &diagnostic)) continue;
+    if (diagnostic.admitted) {
+      TriangulationCandidate candidate;
+      candidate.match = diagnostic.match;
+      candidate.triangulation = diagnostic.triangulation;
+      candidate.point_b = diagnostic.point_b;
+      candidate.depth_1 = diagnostic.depth_1;
+      candidate.depth_2 = diagnostic.depth_2;
+      candidate.minimum_depth = diagnostic.minimum_depth;
+      candidate.maximum_depth = diagnostic.maximum_depth;
+      candidate.relative_depth_difference =
+          diagnostic.relative_depth_difference;
+      candidate.closest_distance_to_baseline_ratio =
+          diagnostic.closest_distance_to_baseline_ratio;
+      result.candidates.push_back(std::move(candidate));
+    }
+  }
+  return result;
+}
+
+void printQuantiles(const char* name, const std::vector<double>& samples,
+                    const std::string& indent) {
+  DeterministicQuantiles quantiles;
+  if (!computeDeterministicQuantiles(samples, &quantiles) ||
+      !quantiles.valid) {
+    std::cout << indent << name << " quantiles: count=0" << std::endl;
+    return;
+  }
+  std::cout << indent << name
+            << " quantiles count/min/p10/median/p90/p95/max="
+            << quantiles.count << "/" << quantiles.minimum << "/"
+            << quantiles.p10 << "/" << quantiles.median << "/"
+            << quantiles.p90 << "/" << quantiles.p95 << "/"
+            << quantiles.maximum << std::endl;
+}
+
+void printCandidateStatistics(const CandidateRunStatistics& statistics,
+                              const std::string& label,
+                              const std::string& indent,
+                              bool include_timing) {
+  const double frames = static_cast<double>(statistics.frames);
+  std::cout << indent << label << ": frames=" << statistics.frames
+            << ", input=" << statistics.input_matches
+            << ", triangulation successes="
+            << statistics.triangulation_successes
+            << ", admitted=" << statistics.admitted
+            << ", admitted avg/min/max="
+            << (statistics.frames == 0U ? 0.0
+                                        : statistics.admitted / frames)
+            << "/"
+            << (statistics.frames == 0U ? 0U
+                                        : statistics.minimum_admitted)
+            << "/" << statistics.maximum_admitted
+            << ", frames with candidates="
+            << statistics.frames_with_candidates
+            << ", longest consecutive frames without candidates="
+            << statistics.longest_frames_without_candidates;
+  if (include_timing) {
+    std::cout << ", evaluator ms avg/max="
+              << (statistics.frames == 0U
+                      ? 0.0
+                      : 1000.0 * statistics.processing_time_sum / frames)
+              << "/" << 1000.0 * statistics.maximum_processing_time;
+  }
+  std::cout << std::endl << indent << "  status counts";
+  for (std::size_t index = 0U; index < statistics.status_counts.size();
+       ++index) {
+    std::cout << " "
+              << triangulationCandidateStatusName(
+                     static_cast<TriangulationCandidateStatus>(index))
+              << "=" << statistics.status_counts[index];
+  }
+  std::cout << std::endl;
+  const std::string metric_indent = indent + "  ";
+  printQuantiles("ray angle rad", statistics.metrics.ray_angle,
+                 metric_indent);
+  printQuantiles("minimum depth m", statistics.metrics.minimum_depth,
+                 metric_indent);
+  printQuantiles("maximum depth m", statistics.metrics.maximum_depth,
+                 metric_indent);
+  printQuantiles("closest distance m",
+                 statistics.metrics.closest_distance, metric_indent);
+  printQuantiles("closest/baseline ratio",
+                 statistics.metrics.closest_to_baseline_ratio,
+                 metric_indent);
+  printQuantiles("maximum angular reprojection rad",
+                 statistics.metrics.angular_reprojection_error,
+                 metric_indent);
+}
+
 }  // namespace
 
 OfflineFeatureRunner::OfflineFeatureRunner(OfflineFeatureRunnerOptions options)
@@ -232,14 +476,28 @@ int OfflineFeatureRunner::run() {
   TemporalFrontend frontend(options_.frontend);
   std::unique_ptr<OrbDescriptorExtractor> descriptor_extractor;
   std::unique_ptr<CrossCameraMatcher> cross_camera_matcher;
+  std::unique_ptr<TriangulationCandidateEvaluator> candidate_evaluator;
   if (options_.cross_camera_matching) {
     descriptor_extractor.reset(new OrbDescriptorExtractor(options_.descriptor));
     cross_camera_matcher.reset(new CrossCameraMatcher(options_.matcher));
+  }
+  if (options_.triangulation_candidates) {
+    candidate_evaluator.reset(new TriangulationCandidateEvaluator(
+        options_.triangulation_candidate));
   }
   std::array<CameraRunStatistics, 4> run_statistics;
   std::array<DescriptorRunStatistics, 4> descriptor_statistics;
   std::vector<PairRunStatistics> pair_statistics(
       options_.matcher.camera_pairs.size());
+  std::vector<CandidateRunStatistics> candidate_pair_statistics(
+      options_.matcher.camera_pairs.size());
+  CandidateRunStatistics global_candidate_statistics;
+  std::vector<ThresholdSweepRun> threshold_sweeps;
+  if (options_.triangulation_threshold_sweep) {
+    threshold_sweeps = makeThresholdSweeps(
+        options_.triangulation_candidate,
+        options_.matcher.camera_pairs.size());
+  }
   std::uint64_t completed_frames = 0U;
   double cross_camera_processing_time_sum = 0.0;
   double maximum_cross_camera_processing_time = 0.0;
@@ -271,6 +529,7 @@ int OfflineFeatureRunner::run() {
         addResult(tracking_result.cameras[id], &run_statistics[id]);
 
       std::vector<CrossCameraPairResult> cross_camera_results;
+      std::vector<TriangulationCandidatePairResult> candidate_results;
       if (cross_camera_matcher) {
         const auto cross_camera_start = std::chrono::steady_clock::now();
         std::array<const ImageFrame*, 4> images{{nullptr, nullptr, nullptr,
@@ -322,6 +581,53 @@ int OfflineFeatureRunner::run() {
              ++index) {
           addPairResult(cross_camera_results[index], &pair_statistics[index]);
         }
+        if (candidate_evaluator) {
+          candidate_results.resize(cross_camera_results.size());
+          std::size_t admitted_in_frame = 0U;
+          double candidate_processing_in_frame = 0.0;
+          for (std::size_t index = 0U; index < cross_camera_results.size();
+               ++index) {
+            const CrossCameraPairResult& matching =
+                cross_camera_results[index];
+            if (matching.camera_id_1 >= descriptor_sets.size() ||
+                matching.camera_id_2 >= descriptor_sets.size() ||
+                !candidate_evaluator->evaluatePair(
+                    matching, descriptor_sets[matching.camera_id_1],
+                    descriptor_sets[matching.camera_id_2], camera_rig,
+                    &candidate_results[index])) {
+              std::cerr << "Triangulation candidate evaluation failed at "
+                        << "frame " << completed_frames << std::endl;
+              bag.close();
+              return 7;
+            }
+            addCandidateResult(candidate_results[index], true,
+                               &candidate_pair_statistics[index]);
+            addCandidateResult(candidate_results[index], false,
+                               &global_candidate_statistics);
+            admitted_in_frame += candidate_results[index].candidates.size();
+            candidate_processing_in_frame +=
+                candidate_results[index].processing_time_seconds;
+          }
+          finishGlobalCandidateFrame(admitted_in_frame,
+                                     &global_candidate_statistics);
+          global_candidate_statistics.maximum_processing_time = std::max(
+              global_candidate_statistics.maximum_processing_time,
+              candidate_processing_in_frame);
+
+          for (ThresholdSweepRun& sweep : threshold_sweeps) {
+            std::size_t sweep_admitted_in_frame = 0U;
+            for (std::size_t index = 0U; index < candidate_results.size();
+                 ++index) {
+              const TriangulationCandidatePairResult readmitted = readmitPair(
+                  candidate_results[index], sweep.options);
+              addCandidateResult(readmitted, true, &sweep.pairs[index]);
+              addCandidateResult(readmitted, false, &sweep.global);
+              sweep_admitted_in_frame += readmitted.candidates.size();
+            }
+            finishGlobalCandidateFrame(sweep_admitted_in_frame,
+                                       &sweep.global);
+          }
+        }
         const double cross_camera_processing_time =
             std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                           cross_camera_start)
@@ -347,6 +653,15 @@ int OfflineFeatureRunner::run() {
           for (const CrossCameraPairResult& pair : cross_camera_results) {
             std::cout << " C" << pair.camera_id_1 << "-C" << pair.camera_id_2
                       << "=" << pair.matches.size();
+          }
+          std::cout << std::endl;
+        }
+        if (!candidate_results.empty()) {
+          std::cout << "  admitted triangulation candidates";
+          for (const TriangulationCandidatePairResult& pair :
+               candidate_results) {
+            std::cout << " C" << pair.camera_id_1 << "-C"
+                      << pair.camera_id_2 << "=" << pair.candidates.size();
           }
           std::cout << std::endl;
         }
@@ -468,6 +783,41 @@ int OfflineFeatureRunner::run() {
                             completed_frames)
               << "/" << 1000.0 * maximum_cross_camera_processing_time
               << std::endl;
+    if (options_.triangulation_candidates) {
+      std::cout << "\nTriangulation candidate diagnostics summary"
+                << std::endl
+                << "  policy: current-frame geometry admission only; no "
+                   "landmark association, no depth filtering"
+                << std::endl;
+      for (const CandidateRunStatistics& statistics :
+           candidate_pair_statistics) {
+        const std::string label =
+            "C" + std::to_string(statistics.camera_id_1) + "-C" +
+            std::to_string(statistics.camera_id_2);
+        printCandidateStatistics(statistics, label, "  ", true);
+      }
+      printCandidateStatistics(global_candidate_statistics, "GLOBAL", "  ",
+                               true);
+    }
+    if (options_.triangulation_threshold_sweep) {
+      std::cout << "\nTriangulation candidate single-variable threshold "
+                   "sweep"
+                << std::endl
+                << "  all non-scanned gates remain at configured defaults; "
+                   "no Cartesian product"
+                << std::endl;
+      for (const ThresholdSweepRun& sweep : threshold_sweeps) {
+        std::cout << "  scan " << sweep.parameter << "=" << sweep.value
+                  << std::endl;
+        for (const CandidateRunStatistics& statistics : sweep.pairs) {
+          const std::string label =
+              "C" + std::to_string(statistics.camera_id_1) + "-C" +
+              std::to_string(statistics.camera_id_2);
+          printCandidateStatistics(statistics, label, "    ", false);
+        }
+        printCandidateStatistics(sweep.global, "GLOBAL", "    ", false);
+      }
+    }
   }
   return completed_frames == 0U ? 7 : 0;
 }

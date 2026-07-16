@@ -164,6 +164,7 @@ add_library(sphere_vio_frontend
   src/frontend/feature_tracker.cpp
   src/frontend/orb_descriptor_extractor.cpp
   src/frontend/temporal_frontend.cpp
+  src/frontend/triangulation_candidate_evaluator.cpp
 )
 target_link_libraries(sphere_vio_frontend
   sphere_vio_camera
@@ -468,6 +469,21 @@ if(CATKIN_ENABLE_TESTING)
       SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     target_link_libraries(test_cross_camera_matcher
+      sphere_vio_frontend
+      sphere_vio_geometry
+      sphere_vio_camera
+      yaml-cpp
+    )
+  endif()
+  catkin_add_gtest(test_triangulation_candidate_evaluator
+    test/test_main.cpp
+    test/test_triangulation_candidate_evaluator.cpp
+  )
+  if(TARGET test_triangulation_candidate_evaluator)
+    target_compile_definitions(test_triangulation_candidate_evaluator PRIVATE
+      SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_triangulation_candidate_evaluator
       sphere_vio_frontend
       sphere_vio_geometry
       sphere_vio_camera

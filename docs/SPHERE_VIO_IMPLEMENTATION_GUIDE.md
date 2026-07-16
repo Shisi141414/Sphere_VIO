@@ -1014,6 +1014,72 @@ FeatureId 仍只表示单相机时序轨迹；CrossCameraMatch 只是当前帧�
 或逆深度。`config/system.yaml` 中的 ORB、Hamming、ratio 和极线角阈值仍为
 真实 bag 统计所用的初始基线参数，尚无 ground truth 精度结论。
 
+Phase 4C：真实 `CrossCameraMatch` 的三角化诊断与候选准入已实现。纯算法层
+`TriangulationCandidateEvaluator` 位于 `sphere_vio_frontend`，直接调用 Phase 3B
+的 `triangulateBodyBearings()`，不复制另一套求解。三个概念保持分离：
+
+```text
+CrossCameraMatch        当前帧描述子与球面极线筛选结果
+TriangulationDiagnostic 完整几何结果和明确失败原因
+TriangulationCandidate  当前门控下接纳的临时几何观测
+```
+
+诊断保留原匹配、核心 `TriangulationResult`、Body 系 `point_b`、两个射线参数、
+深度范围和相对差、ray angle、最近射线距离及其与 baseline 的比、两路角重投影
+误差和 Phase 4B 极线角误差。正深度继续只按两个归一化 bearing 的射线参数判断，
+绝不以相机 z 坐标代替。准入顺序固定为输入、核心求解、有限性、正深度、视差角、
+深度范围、最近距离、角重投影、极线误差。默认配置为：
+
+```text
+minimum_ray_angle                       0.003 rad
+minimum_depth                           0.1 m
+maximum_depth                           50.0 m
+maximum_closest_ray_distance            0.02 m
+maximum_angular_reprojection_error      0.003 rad
+maximum_epipolar_error                  0.003 rad
+```
+
+feature runner 的 `--triangulation-candidates` 默认关闭；启用后的真实 bag 管线为
+`TemporalFrontend -> ORB -> CrossCameraMatcher -> evaluator -> statistics`。
+`--triangulation-threshold-sweep` 对 minimum ray angle、maximum closest distance
+和 maximum angular reprojection error 分别做单变量扫描；扫描复用一次几何诊断，
+只重新执行 admission，不构造笛卡尔积，也不重复三角化。分位数使用排序后
+`p*(N-1)` 位置的线性插值，空样本显式报告 count=0。
+
+真实 `/root/rosbags/sphere/sphere_algorithm_test.bag` 的 873 帧默认门控统计为：
+
+```text
+pair    input  core positive-depth solutions  admitted
+C0-C1      14              0                       0
+C0-C2       2              1                       1
+C1-C3       6              1                       1
+C2-C3     140            138                     138
+global    162            140                     140
+```
+
+其余 22 个匹配全部以负射线参数拒绝：C0-C1/C0-C2/C1-C3/C2-C3 分别为
+14/1/5/2；没有静默失败。全局有候选的帧为 128/873，最长连续无候选区间为
+103 帧。140 个正深度解的 ray angle 最小/中位/p95/最大为
+0.009576/0.169008/0.213315/0.521272 rad；minimum depth 对应为
+0.117760/0.347657/0.376804/6.285509 m；closest distance 对应为
+0.000008/0.000590/0.000975/0.009211 m；maximum angular reprojection error 对应
+为 0.000015/0.000901/0.001429/0.001490 rad。
+
+单变量扫描中，minimum ray angle 取 0.010 rad 时接纳 139 个；maximum closest
+distance 取 0.005 m 时接纳 139 个；maximum angular reprojection error 取
+0.001 rad 时接纳 87 个并将最长连续空窗增至 147 帧，其余指定扫描值接纳 140
+个。两次完整运行忽略处理耗时后逐字一致，Phase 4B 描述子和匹配统计也与接入前
+逐字一致。visualizer 的 `--show-triangulation-candidates` 只显示所选相机对，
+明确标注 accepted/rejection reason、descriptor、epipolar、ray angle、两路深度、
+closest distance 和 angular reprojection error；`--headless` 可在无显示服务环境
+中执行同一渲染路径。
+
+Phase 4C 仍没有 LandmarkId、跨帧跨相机关联、逆深度、深度滤波、地图写回、
+优化、ESKF 或 IMU 融合。140 个候选仅表示当前阈值下几何自洽，不能称为可靠
+地图点，也没有 ground truth 精度结论。下一阶段应先设计 LandmarkTrack 的独立
+数据结构、生命周期和观测归属，再决定是否进入多帧 landmark 初始化；不得把
+当前候选直接写回 `FeatureTrack`。
+
 当前优先级为：
 
 ```text

@@ -57,3 +57,13 @@ frontend:
     ratio_test: 0.80
     require_mutual_best: true
     maximum_epipolar_angle: 0.003
+
+  # Phase 4C admission gates for current-frame triangulation diagnostics.
+  # These do not create landmarks or write depth into temporal tracks.
+  triangulation_candidates:
+    minimum_ray_angle: 0.003
+    minimum_depth: 0.1
+    maximum_depth: 50.0
+    maximum_closest_ray_distance: 0.02
+    maximum_angular_reprojection_error: 0.003
+    maximum_epipolar_error: 0.003

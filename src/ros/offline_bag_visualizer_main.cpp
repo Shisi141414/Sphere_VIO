@@ -15,6 +15,7 @@ struct CommandLineOptions {
   std::string bag_path;
   double playback_rate = 1.0;
   double imu_gap_warning = 0.008;
+  bool headless = false;
   double start_offset = 0.0;
   double duration = -1.0;
   bool has_start_offset = false;
@@ -23,9 +24,11 @@ struct CommandLineOptions {
   bool show_epipolar_curve = false;
   bool show_temporal_features = false;
   bool show_cross_camera_matches = false;
+  bool show_triangulation_candidates = false;
   int match_camera_1 = 0;
   int match_camera_2 = 1;
   std::size_t maximum_displayed_matches = 60U;
+  std::size_t maximum_displayed_candidates = 30U;
   std::string frontend_config_file;
   std::string camera_config_file;
   int epipolar_source_camera = 0;
@@ -42,14 +45,17 @@ void printUsage() {
          "  --start-offset SECONDS   Offset from bag start\n"
          "  --duration SECONDS       Negative means through bag end\n"
          "  --imu-gap-warning SEC    Display warning threshold (default: 0.008)\n"
+         "  --headless               Render without creating a GUI window\n"
          "  --show-spherical-coverage  Add sparse Body-bearing ERP panel\n"
          "  --cameras FILE           Camera YAML for geometry overlays\n"
          "  --show-epipolar-curve   Draw a calibrated spherical epipolar curve\n"
          "  --show-temporal-features  Draw same-camera LK feature tracks\n"
          "  --show-cross-camera-matches  Draw one configured overlap pair\n"
+         "  --show-triangulation-candidates  Diagnose one overlap pair geometrically\n"
          "  --match-camera-1 ID    First cross-camera id (default: 0)\n"
          "  --match-camera-2 ID    Second cross-camera id (default: 1)\n"
          "  --maximum-displayed-matches N  Display cap (default: 60)\n"
+         "  --maximum-displayed-candidates N  Diagnostic cap (default: 30)\n"
          "  --frontend-config FILE Frontend YAML (default: sibling system.yaml)\n"
          "  --epipolar-source-camera ID  Source camera C0..C3 (default: 0)\n"
          "  --epipolar-target-camera ID  Target camera C0..C3 (default: 1)\n"
@@ -112,6 +118,10 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       options->show_spherical_coverage = true;
       continue;
     }
+    if (argument == "--headless") {
+      options->headless = true;
+      continue;
+    }
     if (argument == "--show-epipolar-curve") {
       options->show_epipolar_curve = true;
       continue;
@@ -122,6 +132,12 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
     }
     if (argument == "--show-cross-camera-matches") {
       options->show_cross_camera_matches = true;
+      continue;
+    }
+    if (argument == "--show-triangulation-candidates") {
+      options->show_triangulation_candidates = true;
+      options->show_cross_camera_matches = true;
+      options->show_temporal_features = true;
       continue;
     }
     if (index + 1 >= argc) {
@@ -173,6 +189,14 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       if (!parsePositiveSize(value, &options->maximum_displayed_matches)) {
         if (error) *error =
             "invalid --maximum-displayed-matches value: " + value;
+        return false;
+      }
+    } else if (argument == "--maximum-displayed-candidates") {
+      if (!parsePositiveSize(value,
+                             &options->maximum_displayed_candidates)) {
+        if (error) {
+          *error = "invalid --maximum-displayed-candidates value: " + value;
+        }
         return false;
       }
     } else if (argument == "--epipolar-source-camera") {
@@ -285,17 +309,22 @@ int main(int argc, char** argv) {
   options.bag = std::move(bag_configuration);
   options.playback_rate = command_line.playback_rate;
   options.imu_gap_warning = command_line.imu_gap_warning;
+  options.headless = command_line.headless;
   options.show_spherical_coverage = command_line.show_spherical_coverage;
   options.show_epipolar_curve = command_line.show_epipolar_curve;
   options.show_temporal_features = command_line.show_temporal_features;
   options.show_cross_camera_matches =
       command_line.show_cross_camera_matches;
+  options.show_triangulation_candidates =
+      command_line.show_triangulation_candidates;
   options.match_camera_1 =
       static_cast<sphere_vio::CameraId>(command_line.match_camera_1);
   options.match_camera_2 =
       static_cast<sphere_vio::CameraId>(command_line.match_camera_2);
   options.maximum_displayed_matches =
       command_line.maximum_displayed_matches;
+  options.maximum_displayed_candidates =
+      command_line.maximum_displayed_candidates;
   options.camera_config_file = command_line.camera_config_file.empty()
                                    ? siblingCameraConfigPath(
                                          command_line.config_file)
@@ -324,6 +353,13 @@ int main(int argc, char** argv) {
             frontend_config, &options.descriptor, &options.matcher, &error)) {
       std::cerr << "Invalid cross-camera configuration: " << error
                 << std::endl;
+      return EXIT_FAILURE;
+    }
+    if (options.show_triangulation_candidates &&
+        !sphere_vio::loadTriangulationCandidateOptions(
+            frontend_config, &options.triangulation_candidate, &error)) {
+      std::cerr << "Invalid triangulation candidate configuration: "
+                << error << std::endl;
       return EXIT_FAILURE;
     }
     const sphere_vio::CrossCameraMatcher matcher(options.matcher);

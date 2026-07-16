@@ -164,4 +164,56 @@ bool loadCrossCameraOptions(
   return true;
 }
 
+bool loadTriangulationCandidateOptions(
+    const std::string& config_file,
+    TriangulationCandidateOptions* candidate_options,
+    std::string* error) {
+  if (!candidate_options) return false;
+  try {
+    const YAML::Node root = YAML::LoadFile(config_file);
+    const YAML::Node candidates =
+        root["frontend"]["triangulation_candidates"];
+    if (!candidates) {
+      if (error) {
+        *error = "missing frontend.triangulation_candidates section";
+      }
+      return false;
+    }
+    readIfPresent(candidates, "minimum_ray_angle",
+                  &candidate_options->minimum_ray_angle);
+    readIfPresent(candidates, "minimum_depth",
+                  &candidate_options->minimum_depth);
+    readIfPresent(candidates, "maximum_depth",
+                  &candidate_options->maximum_depth);
+    readIfPresent(candidates, "maximum_closest_ray_distance",
+                  &candidate_options->maximum_closest_ray_distance);
+    readIfPresent(candidates, "maximum_angular_reprojection_error",
+                  &candidate_options->maximum_angular_reprojection_error);
+    readIfPresent(candidates, "maximum_epipolar_error",
+                  &candidate_options->maximum_epipolar_error);
+  } catch (const YAML::Exception& exception) {
+    if (error) *error = exception.what();
+    return false;
+  }
+  if (!std::isfinite(candidate_options->minimum_ray_angle) ||
+      candidate_options->minimum_ray_angle < 0.0 ||
+      !std::isfinite(candidate_options->minimum_depth) ||
+      candidate_options->minimum_depth < 0.0 ||
+      !std::isfinite(candidate_options->maximum_depth) ||
+      candidate_options->maximum_depth < candidate_options->minimum_depth ||
+      !std::isfinite(candidate_options->maximum_closest_ray_distance) ||
+      candidate_options->maximum_closest_ray_distance < 0.0 ||
+      !std::isfinite(
+          candidate_options->maximum_angular_reprojection_error) ||
+      candidate_options->maximum_angular_reprojection_error < 0.0 ||
+      !std::isfinite(candidate_options->maximum_epipolar_error) ||
+      candidate_options->maximum_epipolar_error < 0.0) {
+    if (error) {
+      *error = "triangulation candidate parameters are outside valid ranges";
+    }
+    return false;
+  }
+  return true;
+}
+
 }  // namespace sphere_vio

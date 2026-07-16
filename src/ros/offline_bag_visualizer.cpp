@@ -25,6 +25,7 @@
 #include "sphere_vio/common/camera_rig_loader.hpp"
 #include "sphere_vio/frontend/cross_camera_matcher.hpp"
 #include "sphere_vio/frontend/orb_descriptor_extractor.hpp"
+#include "sphere_vio/frontend/triangulation_candidate_evaluator.hpp"
 #include "sphere_vio/geometry/epipolar_geometry.hpp"
 #include "sphere_vio/geometry/spherical_geometry.hpp"
 #include "sphere_vio/frontend/temporal_frontend.hpp"
@@ -68,6 +69,11 @@ struct VisualizerStatistics {
   bool has_frame = false;
   Timestamp first_frame_time = 0.0;
   Timestamp last_frame_time = 0.0;
+  std::uint64_t candidate_inputs = 0U;
+  std::uint64_t candidate_core_successes = 0U;
+  std::uint64_t candidate_admitted = 0U;
+  std::array<std::uint64_t, static_cast<std::size_t>(
+      TriangulationCandidateStatus::kCount)> candidate_status_counts{{}};
 };
 
 struct EpipolarCurveOverlay {
@@ -505,6 +511,89 @@ void drawCrossCameraMatchOverlay(
                      cv::Scalar(80, 190, 255));
 }
 
+void drawTriangulationCandidateOverlay(
+    const TriangulationCandidatePairResult& evaluation,
+    std::size_t maximum_candidates,
+    const std::array<cv::Point2d, 4>& image_offsets,
+    const std::array<cv::Point2d, 4>& image_scales, cv::Mat* canvas) {
+  if (!canvas || canvas->empty()) return;
+  const std::size_t displayed =
+      std::min(maximum_candidates, evaluation.diagnostics.size());
+  const auto canvas_point = [&](CameraId camera_id,
+                                const Eigen::Vector2d& pixel) {
+    return cv::Point(
+        static_cast<int>(std::lround(image_offsets[camera_id].x +
+                                     pixel.x() * image_scales[camera_id].x)),
+        static_cast<int>(std::lround(image_offsets[camera_id].y +
+                                     pixel.y() * image_scales[camera_id].y)));
+  };
+  for (std::size_t index = 0U; index < displayed; ++index) {
+    const TriangulationDiagnostic& diagnostic =
+        evaluation.diagnostics[index];
+    const cv::Scalar color = diagnostic.admitted
+                                 ? cv::Scalar(80, 255, 80)
+                                 : cv::Scalar(60, 80, 255);
+    const cv::Point first = canvas_point(diagnostic.match.camera_id_1,
+                                         diagnostic.match.pixel_1);
+    const cv::Point second = canvas_point(diagnostic.match.camera_id_2,
+                                          diagnostic.match.pixel_2);
+    cv::line(*canvas, first, second, color, 1, cv::LINE_AA);
+    cv::circle(*canvas, first, 5, color, 2, cv::LINE_AA);
+    cv::circle(*canvas, second, 5, color, 2, cv::LINE_AA);
+    if (index < 12U) {
+      std::ostringstream label;
+      label << (diagnostic.admitted ? "ACCEPTED" :
+                   triangulationCandidateStatusName(diagnostic.status))
+            << std::fixed << std::setprecision(3)
+            << " d=" << diagnostic.match.descriptor_distance
+            << " epi=" << diagnostic.epipolar_error
+            << " ray=" << diagnostic.ray_angle
+            << " z=" << diagnostic.depth_1 << "/" << diagnostic.depth_2
+            << " close=" << diagnostic.closest_ray_distance
+            << " reproj="
+            << diagnostic.maximum_angular_reprojection_error;
+      const cv::Point midpoint((first.x + second.x) / 2,
+                               (first.y + second.y) / 2);
+      drawTextWithShadow(canvas, label.str(), midpoint, 0.28, color);
+    }
+  }
+
+  const int box_width = std::min(760, canvas->cols);
+  const int box_x = std::max(
+      0, std::min(canvas->cols - box_width,
+                  static_cast<int>(image_offsets[evaluation.camera_id_1].x)));
+  const int requested_y =
+      static_cast<int>(image_offsets[evaluation.camera_id_1].y) + 65;
+  const int box_height = std::min(168, canvas->rows);
+  const int box_y =
+      std::max(0, std::min(canvas->rows - box_height, requested_y));
+  const cv::Rect box(box_x, box_y, box_width, box_height);
+  cv::rectangle(*canvas, box, cv::Scalar(12, 12, 16), cv::FILLED);
+  drawTextWithShadow(canvas, "TRIANGULATION CANDIDATE DIAGNOSTICS",
+                     box.tl() + cv::Point(10, 22), 0.47,
+                     cv::Scalar(80, 255, 255));
+  std::ostringstream counts;
+  counts << "C" << evaluation.camera_id_1 << "-C"
+         << evaluation.camera_id_2 << " INPUT " << evaluation.input_matches
+         << " CORE " << evaluation.triangulation_successes << " ACCEPTED "
+         << evaluation.candidates.size() << " DISPLAYED " << displayed;
+  drawTextWithShadow(canvas, counts.str(), box.tl() + cv::Point(10, 47),
+                     0.41, cv::Scalar(255, 255, 255));
+  drawTextWithShadow(canvas,
+                     "LABEL: status d=descriptor epi ray z1/z2 close reproj",
+                     box.tl() + cv::Point(10, 72), 0.39,
+                     cv::Scalar(255, 255, 255));
+  drawTextWithShadow(canvas, "NO LANDMARK ASSOCIATION",
+                     box.tl() + cv::Point(10, 97), 0.42,
+                     cv::Scalar(80, 190, 255));
+  drawTextWithShadow(canvas, "NO DEPTH FILTERING",
+                     box.tl() + cv::Point(10, 122), 0.42,
+                     cv::Scalar(80, 190, 255));
+  drawTextWithShadow(canvas, "NO GROUND TRUTH",
+                     box.tl() + cv::Point(10, 147), 0.42,
+                     cv::Scalar(80, 190, 255));
+}
+
 void appendSphericalCoveragePanel(const cv::Mat& panel, cv::Mat* canvas) {
   if (!canvas || canvas->empty() || panel.empty()) return;
   cv::Mat displayed_panel = panel;
@@ -580,6 +669,8 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
                  const MultiCameraTrackingResult* temporal_tracking,
                  const CrossCameraPairResult* cross_camera_matching,
                  std::size_t maximum_displayed_matches,
+                 const TriangulationCandidatePairResult* candidate_evaluation,
+                 std::size_t maximum_displayed_candidates,
                  std::string* error) {
   if (!canvas || !interval_statistics) return false;
   if (frame.images.size() != FrameAssembler::kCameraCount) {
@@ -810,7 +901,11 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
       }
     }
   }
-  if (cross_camera_matching) {
+  if (candidate_evaluation) {
+    drawTriangulationCandidateOverlay(*candidate_evaluation,
+                                      maximum_displayed_candidates,
+                                      image_offsets, image_scales, canvas);
+  } else if (cross_camera_matching) {
     drawCrossCameraMatchOverlay(*cross_camera_matching,
                                 maximum_displayed_matches, image_offsets,
                                 image_scales, canvas);
@@ -915,6 +1010,7 @@ int OfflineBagVisualizer::run() {
   }
   std::unique_ptr<OrbDescriptorExtractor> descriptor_extractor;
   std::unique_ptr<CrossCameraMatcher> cross_camera_matcher;
+  std::unique_ptr<TriangulationCandidateEvaluator> candidate_evaluator;
   if (options_.show_cross_camera_matches) {
     descriptor_extractor.reset(new OrbDescriptorExtractor(options_.descriptor));
     cross_camera_matcher.reset(new CrossCameraMatcher(options_.matcher));
@@ -924,6 +1020,10 @@ int OfflineBagVisualizer::run() {
                 << std::endl;
       return 2;
     }
+  }
+  if (options_.show_triangulation_candidates) {
+    candidate_evaluator.reset(new TriangulationCandidateEvaluator(
+        options_.triangulation_candidate));
   }
   cv::Mat spherical_coverage_panel;
   if (options_.show_spherical_coverage) {
@@ -963,10 +1063,16 @@ int OfflineBagVisualizer::run() {
     std::cout << "  temporal features: enabled (same-camera LK only)"
               << std::endl;
   }
-  if (options_.show_cross_camera_matches) {
+  if (options_.show_cross_camera_matches &&
+      !options_.show_triangulation_candidates) {
     std::cout << "  cross-camera candidates: enabled for C"
               << options_.match_camera_1 << "-C" << options_.match_camera_2
               << " (no triangulation or depth)" << std::endl;
+  }
+  if (options_.show_triangulation_candidates) {
+    std::cout << "  triangulation candidate diagnostics: enabled; "
+                 "no landmark association, no depth filtering"
+              << std::endl;
   }
 
   rosbag::Bag bag;
@@ -1023,13 +1129,17 @@ int OfflineBagVisualizer::run() {
               << std::endl;
   }
 
-  try {
-    cv::namedWindow(kWindowName, cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO);
-  } catch (const cv::Exception& exception) {
-    std::cerr << "Cannot create OpenCV window: " << exception.what()
-              << std::endl;
-    bag.close();
-    return 5;
+  if (!options_.headless) {
+    try {
+      cv::namedWindow(kWindowName, cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO);
+    } catch (const cv::Exception& exception) {
+      std::cerr << "Cannot create OpenCV window: " << exception.what()
+                << std::endl;
+      bag.close();
+      return 5;
+    }
+  } else {
+    std::cout << "  display: headless rendering validation" << std::endl;
   }
 
   rosbag::View view(bag, rosbag::TopicQuery(topics), processing_start,
@@ -1055,7 +1165,8 @@ int OfflineBagVisualizer::run() {
       imu_buffer.discardThrough(frame.timestamp);
     } else {
       interval = imu_buffer.extract(previous_frame_time, frame.timestamp);
-      if (!playback.waitBeforeFrame(frame.timestamp - previous_frame_time,
+      if (!options_.headless &&
+          !playback.waitBeforeFrame(frame.timestamp - previous_frame_time,
                                     &displayed_canvas)) {
         user_quit = true;
         return false;
@@ -1075,6 +1186,7 @@ int OfflineBagVisualizer::run() {
       return false;
     }
     CrossCameraPairResult cross_camera_result;
+    TriangulationCandidatePairResult candidate_result;
     if (cross_camera_matcher) {
       std::array<const ImageFrame*, 4> images{{nullptr, nullptr, nullptr,
                                                nullptr}};
@@ -1110,6 +1222,29 @@ int OfflineBagVisualizer::run() {
         visualization_error = true;
         return false;
       }
+      if (candidate_evaluator &&
+          !candidate_evaluator->evaluatePair(
+              cross_camera_result, first_descriptors, second_descriptors,
+              temporal_camera_rig, &candidate_result)) {
+        std::cerr << "Triangulation candidate visualization failed at "
+                  << formatTimestamp(frame.timestamp) << std::endl;
+        visualization_error = true;
+        return false;
+      }
+      if (candidate_evaluator) {
+        run_statistics.candidate_inputs += candidate_result.input_matches;
+        run_statistics.candidate_core_successes +=
+            candidate_result.triangulation_successes;
+        run_statistics.candidate_admitted += candidate_result.candidates.size();
+        for (const TriangulationDiagnostic& diagnostic :
+             candidate_result.diagnostics) {
+          const std::size_t status =
+              static_cast<std::size_t>(diagnostic.status);
+          if (status < run_statistics.candidate_status_counts.size()) {
+            ++run_statistics.candidate_status_counts[status];
+          }
+        }
+      }
     }
     if (!renderFrame(frame, run_statistics.processed_frames + 1, first_frame,
                      previous_frame_time, interval, options_.imu_gap_warning,
@@ -1123,21 +1258,25 @@ int OfflineBagVisualizer::run() {
                      temporal_frontend ? &temporal_tracking : nullptr,
                      cross_camera_matcher ? &cross_camera_result : nullptr,
                      options_.maximum_displayed_matches,
+                     candidate_evaluator ? &candidate_result : nullptr,
+                     options_.maximum_displayed_candidates,
                      &render_error)) {
       std::cerr << "Cannot render frame: " << render_error << std::endl;
       visualization_error = true;
       return false;
     }
     displayed_canvas = std::move(canvas);
-    if (run_statistics.processed_frames == 0) {
+    if (!options_.headless && run_statistics.processed_frames == 0) {
       cv::resizeWindow(kWindowName, displayed_canvas.cols,
                        displayed_canvas.rows);
     }
-    cv::imshow(kWindowName, displayed_canvas);
-    playback.frameDisplayed();
-    if (!playback.pumpAfterDisplay(&displayed_canvas)) {
-      user_quit = true;
-      return false;
+    if (!options_.headless) {
+      cv::imshow(kWindowName, displayed_canvas);
+      playback.frameDisplayed();
+      if (!playback.pumpAfterDisplay(&displayed_canvas)) {
+        user_quit = true;
+        return false;
+      }
     }
 
     ++run_statistics.processed_frames;
@@ -1211,7 +1350,7 @@ int OfflineBagVisualizer::run() {
   const std::size_t pending_images = assembler.pendingImageCount();
   assembler.discardPendingImages();
   const FrameAssembler::Statistics& frame_statistics = assembler.statistics();
-  cv::destroyWindow(kWindowName);
+  if (!options_.headless) cv::destroyWindow(kWindowName);
   bag.close();
 
   std::cout << "\nOffline visualization summary"
@@ -1237,6 +1376,21 @@ int OfflineBagVisualizer::run() {
                     ? "visualization error"
                     : (user_quit ? "user exit" : "bag complete"))
             << std::endl;
+  if (options_.show_triangulation_candidates) {
+    std::cout << "  candidate diagnostics input/core/admitted: "
+              << run_statistics.candidate_inputs << "/"
+              << run_statistics.candidate_core_successes << "/"
+              << run_statistics.candidate_admitted
+              << "\n  candidate status counts";
+    for (std::size_t index = 0U;
+         index < run_statistics.candidate_status_counts.size(); ++index) {
+      std::cout << " "
+                << triangulationCandidateStatusName(
+                       static_cast<TriangulationCandidateStatus>(index))
+                << "=" << run_statistics.candidate_status_counts[index];
+    }
+    std::cout << std::endl;
+  }
   return visualization_error ? 6 : 0;
 }
 
