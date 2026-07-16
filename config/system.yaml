@@ -97,3 +97,11 @@ panorama:
     data: [1.0, 0.0, 0.0,
            0.0, 1.0, 0.0,
            0.0, 0.0, 1.0]
+  remap:
+    interpolation: linear
+    border_mode: constant
+    sampling_margin: 1.0
+    parallel_cameras: true
+    # Project diagnostic choice, not the paper's official seam/blending rule.
+    # The current owner-selected composite performs no blending.
+    owner_policy: maximum_camera_forward_component

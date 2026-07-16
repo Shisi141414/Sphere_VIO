@@ -1250,6 +1250,46 @@ Phase 5A 尚未生成或融合全景图像，未在 panorama 上运行 FAST，�
 filter 或 ESKF。可选稀疏 USPM visualizer 扩展也留待后续；现有
 `--show-spherical-coverage` 仍明确是 direction-only Body ERP 面板。
 
+### Phase 5B：四相机 USPM 图像 inverse remap
+
+Phase 5B 直接复用 Phase 5A 的 `panoramaToCameraBearing()` 和物理相机
+`CameraModel::project()`，为每路相机一次性预计算静态 inverse map：
+
+```text
+panorama array pixel (x,y)
+ -> continuous USPM coordinate (x+0.5,y+0.5)
+ -> finite-radius sphere point
+ -> specified camera bearing and pixel
+ -> cv::remap mono8 sampling
+```
+
+这里 `(x+0.5,y+0.5)` 是明确的 panorama 像素中心约定。模型投影失败、非有限
+物理像素，或不满足 `margin <= u < width-margin`、`margin <= v < height-margin`
+时，map x/y 固定为 -1 且 valid mask 为 0；绝不 clamp 到物理图像边缘。静态
+`CameraPanoramaRemap` 保存两张 float map、uint8 valid mask 和 float owner score，
+只在 PanoramaSpec、CameraRig、分辨率或 sampling margin 改变时重建，不按帧重算
+USPM 几何。
+
+四路 layer 彼此独立，mask 外强制清零。`coverage_count` 保存每个 panorama 数组
+像素被 0--4 路相机覆盖的数量；配置 overlap mask 只默认生成权威 C0-C1、C0-C2、
+C1-C3、C2-C3 四对。顺序模式和 `std::async` 四相机并行模式共享只读 map，每个
+任务只写自己的 layer，完成后才构造 composite。
+
+诊断 owner policy 为所有有效相机中最大 `bearing_c.z()`，分数相同时选择较小
+CameraId；负 z 仍是合法候选。该规则只是本项目为得到确定性来源表示所作的工程
+选择，论文公开正文没有提供本设备完整 owner、seam 或 blending 代码，因此不能
+称作论文官方策略。`owner-selected diagnostic composite` 只从 owner 对应 layer
+复制像素，不按相机次序覆盖、不加权、不曝光补偿、不做 seam optimization 或
+多频带融合。
+
+ROS 接入层 `sphere_vio_panorama_runner` 负责 YAML、rosbag 和首帧临时诊断图，
+核心 `PanoramaRemapper` 不依赖 ROS、rosbag、cv_bridge 或 highgui。visualizer 的
+`--show-uspm-panorama`/`--show-uspm-owner` 使用真实有限半径图像 remap；旧
+`--show-spherical-coverage` 仍保持 direction-only ERP 语义。
+
+本阶段仍未在 panorama 上运行 FAST，未创建 `SphericalFeatureId`，未实现 HOFA、
+photometric alignment、inverse-depth/depth filter 或 ESKF。
+
 当前优先级为：
 
 ```text

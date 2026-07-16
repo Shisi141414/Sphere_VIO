@@ -32,6 +32,7 @@
 #include "sphere_vio/frontend/temporal_frontend.hpp"
 #include "sphere_vio/ros/frame_assembler.hpp"
 #include "sphere_vio/ros/ros_conversions.hpp"
+#include "sphere_vio/panorama/panorama_remapper.hpp"
 
 namespace sphere_vio {
 namespace {
@@ -1063,6 +1064,42 @@ OfflineBagVisualizer::OfflineBagVisualizer(OfflineBagVisualizerOptions options)
     : options_(std::move(options)) {}
 
 int OfflineBagVisualizer::run() {
+  std::unique_ptr<PanoramaRemapper> panorama_remapper;
+  std::string panorama_coverage_text;
+  if (options_.show_uspm_panorama) {
+    CameraRig panorama_rig;
+    std::string panorama_error;
+    if (!loadCameraRigFromYaml(options_.camera_config_file, &panorama_rig,
+                               &panorama_error)) {
+      std::cerr << "Cannot load USPM CameraRig: " << panorama_error << std::endl;
+      return 2;
+    }
+    panorama_remapper.reset(new PanoramaRemapper());
+    if (!panorama_remapper->initialize(panorama_rig, options_.panorama,
+                                       options_.panorama_remap,
+                                       &panorama_error)) {
+      std::cerr << "Cannot initialize USPM panorama: " << panorama_error
+                << std::endl;
+      return 2;
+    }
+    std::cout << "  finite-radius USPM image remap: enabled, radius="
+              << options_.panorama.sphere_radius << " m, static maps="
+              << panorama_remapper->staticMapBytes() / (1024.0 * 1024.0)
+              << " MiB" << std::endl;
+    std::array<std::size_t, 5> counts{{}};
+    for (int y = 0; y < panorama_remapper->coverageCount().rows; ++y)
+      for (int x = 0; x < panorama_remapper->coverageCount().cols; ++x)
+        ++counts[panorama_remapper->coverageCount().at<std::uint8_t>(y, x)];
+    const double total = panorama_remapper->coverageCount().total();
+    std::ostringstream coverage;
+    coverage << std::fixed << std::setprecision(1) << "coverage 0/1/2/3/4=";
+    for (int count = 0; count <= 4; ++count) {
+      if (count) coverage << '/';
+      coverage << 100.0 * counts[count] / total;
+    }
+    coverage << '%';
+    panorama_coverage_text = coverage.str();
+  }
   CameraRig temporal_camera_rig;
   std::unique_ptr<TemporalFrontend> temporal_frontend;
   if (options_.show_temporal_features || options_.show_cross_camera_matches) {
@@ -1429,6 +1466,72 @@ int OfflineBagVisualizer::run() {
       std::cerr << "Cannot render frame: " << render_error << std::endl;
       visualization_error = true;
       return false;
+    }
+    if (panorama_remapper) {
+      std::array<cv::Mat, 4> sources;
+      for (const ImageFrame& image : frame.images) {
+        if (image.camera_id < 4U) sources[image.camera_id] = image.image;
+      }
+      PanoramaRemapResult panorama_result;
+      if (!panorama_remapper->remap(sources, &panorama_result, &render_error)) {
+        std::cerr << "Cannot remap USPM panorama: " << render_error << std::endl;
+        visualization_error = true;
+        return false;
+      }
+      cv::Mat panel_bgr;
+      cv::cvtColor(panorama_result.owner_selected_composite, panel_bgr,
+                   cv::COLOR_GRAY2BGR);
+      if (options_.show_uspm_owner) {
+        const std::array<cv::Vec3b, 4> colors{{{0,255,255},{0,255,0},
+                                               {255,0,255},{0,128,255}}};
+        for (int y = 0; y < panel_bgr.rows; ++y) for (int x = 0; x < panel_bgr.cols; ++x) {
+          const int owner = panorama_result.owner_camera_id.at<std::int8_t>(y, x);
+          if (owner >= 0) {
+            cv::Vec3b& pixel = panel_bgr.at<cv::Vec3b>(y, x);
+            for (int channel = 0; channel < 3; ++channel) {
+              pixel[channel] = cv::saturate_cast<std::uint8_t>(
+                  0.65 * pixel[channel] + 0.35 * colors[owner][channel]);
+            }
+          }
+        }
+      }
+      drawTextWithShadow(&panel_bgr, "FINITE-RADIUS USPM IMAGE REMAP",
+                         cv::Point(12, 24), 0.55, cv::Scalar(255,255,255));
+      drawTextWithShadow(&panel_bgr,
+          "OWNER-SELECTED DIAGNOSTIC COMPOSITE | NO BLENDING",
+          cv::Point(12, 48), 0.45, cv::Scalar(80,220,255));
+      drawTextWithShadow(&panel_bgr,
+          "NO PANORAMA FAST | NO HOFA | NO DEPTH FILTER",
+          cv::Point(12, 70), 0.42, cv::Scalar(80,220,255));
+      std::ostringstream timing;
+      timing << std::fixed << std::setprecision(2) << "r="
+             << options_.panorama.sphere_radius << "m  remap="
+             << panorama_result.processing_time_ms << "ms";
+      drawTextWithShadow(&panel_bgr, timing.str(), cv::Point(12, 92), 0.4,
+                         cv::Scalar(255,255,255));
+      drawTextWithShadow(&panel_bgr, panorama_coverage_text,
+                         cv::Point(12, 114), 0.4, cv::Scalar(255,255,255));
+      appendSphericalCoveragePanel(panel_bgr, &canvas);
+      if (options_.show_uspm_layers) {
+        const int layer_width = options_.panorama.width / 2;
+        const int layer_height = options_.panorama.height / 2;
+        cv::Mat layer_panel(options_.panorama.height, options_.panorama.width,
+                            CV_8UC3, cv::Scalar(0, 0, 0));
+        for (CameraId id = 0U; id < 4U; ++id) {
+          cv::Mat layer_bgr, resized;
+          cv::cvtColor(panorama_result.layers[id].image, layer_bgr,
+                       cv::COLOR_GRAY2BGR);
+          cv::resize(layer_bgr, resized, cv::Size(layer_width, layer_height));
+          const int offset_x = (id % 2U) * layer_width;
+          const int offset_y = (id / 2U) * layer_height;
+          resized.copyTo(layer_panel(cv::Rect(offset_x, offset_y,
+                                               layer_width, layer_height)));
+          drawTextWithShadow(&layer_panel, "USPM LAYER C" + std::to_string(id),
+                             cv::Point(offset_x + 10, offset_y + 24), 0.5,
+                             kCoverageColors[id]);
+        }
+        appendSphericalCoveragePanel(layer_panel, &canvas);
+      }
     }
     displayed_canvas = std::move(canvas);
     if (!options_.headless && run_statistics.processed_frames == 0) {

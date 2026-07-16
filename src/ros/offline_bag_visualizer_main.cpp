@@ -7,6 +7,7 @@
 
 #include "sphere_vio/ros/offline_bag_visualizer.hpp"
 #include "sphere_vio/ros/frontend_options_loader.hpp"
+#include "sphere_vio/ros/offline_panorama_runner.hpp"
 
 namespace {
 
@@ -26,6 +27,10 @@ struct CommandLineOptions {
   bool show_cross_camera_matches = false;
   bool show_triangulation_candidates = false;
   bool show_landmark_tracks = false;
+  bool show_uspm_panorama = false;
+  bool show_uspm_layers = false;
+  bool show_uspm_owner = false;
+  double uspm_radius = -1.0;
   int match_camera_1 = 0;
   int match_camera_2 = 1;
   std::size_t maximum_displayed_matches = 60U;
@@ -55,6 +60,10 @@ void printUsage() {
          "  --show-cross-camera-matches  Draw one configured overlap pair\n"
          "  --show-triangulation-candidates  Diagnose one overlap pair geometrically\n"
          "  --show-landmark-tracks  Draw current landmark hypotheses\n"
+         "  --show-uspm-panorama   Show finite-radius owner-selected composite\n"
+         "  --show-uspm-layers     Show four independent panorama layers\n"
+         "  --show-uspm-owner      Show deterministic owner/source map\n"
+         "  --uspm-radius VALUE    Override configured sphere radius\n"
          "  --match-camera-1 ID    First cross-camera id (default: 0)\n"
          "  --match-camera-2 ID    Second cross-camera id (default: 1)\n"
          "  --maximum-displayed-matches N  Display cap (default: 60)\n"
@@ -151,6 +160,20 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       options->show_temporal_features = true;
       continue;
     }
+    if (argument == "--show-uspm-panorama") {
+      options->show_uspm_panorama = true;
+      continue;
+    }
+    if (argument == "--show-uspm-layers") {
+      options->show_uspm_layers = true;
+      options->show_uspm_panorama = true;
+      continue;
+    }
+    if (argument == "--show-uspm-owner") {
+      options->show_uspm_owner = true;
+      options->show_uspm_panorama = true;
+      continue;
+    }
     if (index + 1 >= argc) {
       if (error) *error = "missing value after " + argument;
       return false;
@@ -186,6 +209,11 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       options->camera_config_file = value;
     } else if (argument == "--frontend-config") {
       options->frontend_config_file = value;
+    } else if (argument == "--uspm-radius") {
+      if (!parseDouble(value, &options->uspm_radius) || options->uspm_radius <= 0) {
+        if (error) *error = "invalid --uspm-radius value: " + value;
+        return false;
+      }
     } else if (argument == "--match-camera-1") {
       if (!parseCameraId(value, &options->match_camera_1)) {
         if (error) *error = "invalid --match-camera-1 value: " + value;
@@ -338,6 +366,9 @@ int main(int argc, char** argv) {
   options.show_triangulation_candidates =
       command_line.show_triangulation_candidates;
   options.show_landmark_tracks = command_line.show_landmark_tracks;
+  options.show_uspm_panorama = command_line.show_uspm_panorama;
+  options.show_uspm_layers = command_line.show_uspm_layers;
+  options.show_uspm_owner = command_line.show_uspm_owner;
   options.match_camera_1 =
       static_cast<sphere_vio::CameraId>(command_line.match_camera_1);
   options.match_camera_2 =
@@ -356,6 +387,20 @@ int main(int argc, char** argv) {
   options.epipolar_target_camera = command_line.epipolar_target_camera;
   options.epipolar_source_u = command_line.epipolar_source_u;
   options.epipolar_source_v = command_line.epipolar_source_v;
+  if (options.show_uspm_panorama) {
+    const std::string panorama_config =
+        command_line.frontend_config_file.empty()
+            ? siblingSystemConfigPath(command_line.config_file)
+            : command_line.frontend_config_file;
+    if (!sphere_vio::loadPanoramaConfiguration(
+            panorama_config, &options.panorama, &options.panorama_remap,
+            &error)) {
+      std::cerr << "Invalid panorama configuration: " << error << std::endl;
+      return EXIT_FAILURE;
+    }
+    if (command_line.uspm_radius > 0)
+      options.panorama.sphere_radius = command_line.uspm_radius;
+  }
   if (options.show_temporal_features || options.show_cross_camera_matches) {
     const std::string frontend_config =
         command_line.frontend_config_file.empty()

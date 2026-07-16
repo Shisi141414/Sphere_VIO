@@ -25,7 +25,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(Eigen3 REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d video highgui)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs features2d video highgui)
 find_package(yaml-cpp REQUIRED)
 
 ## System dependencies are found with CMake's conventions
@@ -159,9 +159,14 @@ add_library(sphere_vio_geometry
 )
 
 add_library(sphere_vio_panorama
+  src/panorama/panorama_remapper.cpp
   src/panorama/uspm.cpp
 )
-target_link_libraries(sphere_vio_panorama sphere_vio_camera)
+target_link_libraries(sphere_vio_panorama
+  sphere_vio_camera
+  opencv_core
+  opencv_imgproc
+)
 
 add_library(sphere_vio_frontend
   src/frontend/cross_camera_matcher.cpp
@@ -186,6 +191,7 @@ add_library(sphere_vio_ros
   src/ros/frontend_options_loader.cpp
   src/ros/offline_bag_runner.cpp
   src/ros/offline_feature_runner.cpp
+  src/ros/offline_panorama_runner.cpp
   src/ros/ros_conversions.cpp
 )
 add_dependencies(sphere_vio_ros ${catkin_EXPORTED_TARGETS})
@@ -193,8 +199,10 @@ target_link_libraries(sphere_vio_ros
   sphere_vio_core
   sphere_vio_camera
   sphere_vio_frontend
+  sphere_vio_panorama
   ${catkin_LIBRARIES}
   opencv_core
+  opencv_imgcodecs
   yaml-cpp
 )
 
@@ -229,6 +237,18 @@ target_link_libraries(sphere_vio_bag_runner sphere_vio_ros ${catkin_LIBRARIES})
 add_executable(sphere_vio_feature_runner
   src/ros/offline_feature_runner_main.cpp
 )
+
+add_executable(sphere_vio_panorama_runner
+  src/ros/offline_panorama_runner_main.cpp
+)
+add_dependencies(sphere_vio_panorama_runner ${catkin_EXPORTED_TARGETS})
+target_link_libraries(sphere_vio_panorama_runner
+  sphere_vio_ros
+  sphere_vio_panorama
+  ${catkin_LIBRARIES}
+  opencv_imgcodecs
+  yaml-cpp
+)
 add_dependencies(sphere_vio_feature_runner ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sphere_vio_feature_runner
   sphere_vio_ros
@@ -248,6 +268,7 @@ target_link_libraries(sphere_vio_bag_visualizer
   sphere_vio_camera
   sphere_vio_geometry
   sphere_vio_frontend
+  sphere_vio_panorama
   ${catkin_LIBRARIES}
   opencv_core
   opencv_imgproc
@@ -293,7 +314,7 @@ install(TARGETS sphere_vio_core sphere_vio_camera sphere_vio_geometry
                 sphere_vio_panorama
                 sphere_vio_frontend
                 sphere_vio_ros sensor_inspector_node sphere_vio_bag_runner
-                sphere_vio_feature_runner sphere_vio_bag_visualizer
+                sphere_vio_feature_runner sphere_vio_panorama_runner sphere_vio_bag_visualizer
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -408,6 +429,22 @@ if(CATKIN_ENABLE_TESTING)
       sphere_vio_geometry
       sphere_vio_camera
       yaml-cpp
+    )
+  endif()
+  catkin_add_gtest(test_panorama_remapper
+    test/test_main.cpp
+    test/test_panorama_remapper.cpp
+  )
+  if(TARGET test_panorama_remapper)
+    target_compile_definitions(test_panorama_remapper PRIVATE
+      SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_panorama_remapper
+      sphere_vio_panorama
+      sphere_vio_camera
+      yaml-cpp
+      opencv_core
+      opencv_imgproc
     )
   endif()
   catkin_add_gtest(test_epipolar_geometry

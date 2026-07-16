@@ -9,6 +9,19 @@ matching, and `LandmarkTrack` pipeline remains the reproducible
 `legacy_per_camera` diagnostic baseline and fallback; Phase 5A does not change
 the default runner or create panorama imagery/features.
 
+Phase 5B adds inverse-remapped mono8 panorama layers, coverage/source masks,
+and an owner-selected diagnostic composite. It deliberately performs no
+blending, panorama feature detection, HOFA, or depth estimation.
+
+```bash
+/root/catkin_ws/devel/lib/sphere_vio/sphere_vio_panorama_runner \
+  --config /root/catkin_ws/src/sphere_vio/config/offline.yaml \
+  --system-config /root/catkin_ws/src/sphere_vio/config/system.yaml \
+  --cameras /root/catkin_ws/src/sphere_vio/config/cameras.yaml \
+  --bag /root/rosbags/sphere/sphere_algorithm_test.bag \
+  --parallel-cameras
+```
+
 ## Development platforms
 
 ### Development computer
