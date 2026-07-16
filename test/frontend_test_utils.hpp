@@ -1,8 +1,10 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include <Eigen/Geometry>
 #include <opencv2/imgproc.hpp>
@@ -30,6 +32,12 @@ inline CameraRig makeRig(int width = 320, int height = 240) {
     camera.R_b_c =
         Eigen::AngleAxisd(0.1 * camera_id, Eigen::Vector3d::UnitY())
             .toRotationMatrix();
+    const std::array<Eigen::Vector3d, 4> positions{{
+        Eigen::Vector3d(0.0, 0.0, 0.0),
+        Eigen::Vector3d(0.10, 0.0, 0.0),
+        Eigen::Vector3d(0.0, 0.10, 0.0),
+        Eigen::Vector3d(0.10, 0.10, 0.0)}};
+    camera.t_b_c = positions[camera_id];
     if (!rig.addCamera(camera)) return CameraRig{};
   }
   return rig;

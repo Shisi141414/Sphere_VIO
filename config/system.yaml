@@ -37,3 +37,23 @@ frontend:
   maximum_forward_backward_error: 1.0
 
   redetection_ratio: 0.75
+
+  # Kalibr cam_overlaps mapped from cam0/cam1/cam2/cam3 to project
+  # C0/C1/C3/C2. These are initial Phase 4B matching thresholds.
+  cross_camera:
+    camera_pairs:
+      - [0, 1]
+      - [0, 2]
+      - [1, 3]
+      - [2, 3]
+
+    orb_patch_size: 31
+    orb_edge_threshold: 31
+    orb_levels: 4
+    orb_scale_factor: 1.2
+    orb_fast_threshold: 20
+
+    maximum_descriptor_distance: 64
+    ratio_test: 0.80
+    require_mutual_best: true
+    maximum_epipolar_angle: 0.003
