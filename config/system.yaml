@@ -21,6 +21,9 @@ inspection:
 # Initial Phase 4A debugging parameters. These have not been tuned for a
 # particular scene or motion profile.
 frontend:
+  # Phase 5A keeps the reproducible Phase 4 pipeline as the default. The
+  # uspm_experimental mode is geometry diagnostics only at this stage.
+  pipeline_mode: legacy_per_camera
   maximum_features_per_camera: 250
   grid_rows: 6
   grid_columns: 8
@@ -76,3 +79,21 @@ frontend:
     maximum_frames_without_confirmation: 30
     retire_after_frames_without_observation: 60
     maximum_observation_history: 40
+
+# Finite-radius Unified Spherical Panorama Model. The 1 m radius is an
+# initial project implementation choice, not a published device parameter.
+panorama:
+  model: uspm
+  width: 2048
+  height: 1024
+  horizontal_fov: 6.283185307179586
+  vertical_fov: 3.141592653589793
+  sphere_radius: 1.0
+  # Initial diagnostic convention: P is aligned with Body. Display alignment
+  # must be changed explicitly here after physical-axis verification.
+  R_p_b:
+    rows: 3
+    cols: 3
+    data: [1.0, 0.0, 0.0,
+           0.0, 1.0, 0.0,
+           0.0, 0.0, 1.0]

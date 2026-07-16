@@ -3,6 +3,12 @@
 A ROS Noetic implementation and reproduction study of Sphere-VIO for a
 four-camera omnidirectional fisheye camera system with an IMU.
 
+The implementation direction is now the paper's finite-radius USPM, followed
+by HOFA and a spherical-bearing ESKF. The existing per-camera FAST/LK, ORB
+matching, and `LandmarkTrack` pipeline remains the reproducible
+`legacy_per_camera` diagnostic baseline and fallback; Phase 5A does not change
+the default runner or create panorama imagery/features.
+
 ## Development platforms
 
 ### Development computer

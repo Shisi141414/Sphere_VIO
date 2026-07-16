@@ -120,7 +120,7 @@ find_package(yaml-cpp REQUIRED)
 catkin_package(
   INCLUDE_DIRS include
 #  LIBRARIES sphere_vio
-  LIBRARIES sphere_vio_core sphere_vio_camera sphere_vio_geometry sphere_vio_frontend sphere_vio_ros
+  LIBRARIES sphere_vio_core sphere_vio_camera sphere_vio_geometry sphere_vio_panorama sphere_vio_frontend sphere_vio_ros
   CATKIN_DEPENDS cv_bridge geometry_msgs image_transport message_filters nav_msgs roscpp rosbag sensor_msgs std_msgs tf2 tf2_ros
   DEPENDS EIGEN3 OpenCV
 #  DEPENDS system_lib
@@ -157,6 +157,11 @@ add_library(sphere_vio_geometry
   src/geometry/spherical_geometry.cpp
   src/geometry/triangulation.cpp
 )
+
+add_library(sphere_vio_panorama
+  src/panorama/uspm.cpp
+)
+target_link_libraries(sphere_vio_panorama sphere_vio_camera)
 
 add_library(sphere_vio_frontend
   src/frontend/cross_camera_matcher.cpp
@@ -285,6 +290,7 @@ target_link_libraries(sphere_vio_bag_visualizer
 # )
 
 install(TARGETS sphere_vio_core sphere_vio_camera sphere_vio_geometry
+                sphere_vio_panorama
                 sphere_vio_frontend
                 sphere_vio_ros sensor_inspector_node sphere_vio_bag_runner
                 sphere_vio_feature_runner sphere_vio_bag_visualizer
@@ -384,6 +390,21 @@ if(CATKIN_ENABLE_TESTING)
       SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     target_link_libraries(test_spherical_geometry
+      sphere_vio_geometry
+      sphere_vio_camera
+      yaml-cpp
+    )
+  endif()
+  catkin_add_gtest(test_uspm
+    test/test_main.cpp
+    test/test_uspm.cpp
+  )
+  if(TARGET test_uspm)
+    target_compile_definitions(test_uspm PRIVATE
+      SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_uspm
+      sphere_vio_panorama
       sphere_vio_geometry
       sphere_vio_camera
       yaml-cpp

@@ -1183,6 +1183,73 @@ confirmed landmark，也没有 ground truth 正确率验证。
 分析和优化跨相机匹配的持久一致性与冲突来源，再决定逆深度初始化设计；当前数据
 分布还不足以直接把这些关联假设升级为持久三维地标。
 
+### Phase 5A：有限半径 Unified Spherical Panorama Model 核心几何
+
+项目战略主线已调整为论文 USPM、HOFA 和 spherical-bearing ESKF。Phase 4A--4D
+的 per-camera FAST/LK、ORB 跨相机匹配和 `LandmarkTrack` 生命周期完整保留为
+`legacy_per_camera` 可重复诊断基线与 fallback；完成 Phase 5B/5C 后再决定默认
+入口切换。`config/system.yaml` 当前默认仍为 `legacy_per_camera`，另一个保留模式
+`uspm_experimental` 只表示 USPM 几何诊断，不运行新的 VIO 前端。
+
+新增纯几何库 `sphere_vio_panorama`。它显式定义虚拟 Panorama 坐标系 P，并继续
+使用项目变换约定：
+
+```text
+p_P = R_p_b * p_B + t_p_b
+R_p_c = R_p_b * R_b_c
+t_p_c = R_p_b * t_b_c + t_p_b
+```
+
+初始诊断配置令 P 与 Body 对齐、球心与 IMU 原点重合，但 P 和 B 不再是隐式的
+同一坐标系。该 identity `R_p_b` 只是尚待物理显示方向验证的项目初始约定；代码
+不假定 `theta=0` 是车辆前方，也不在投影公式中偷偷交换轴。
+
+给定归一化后的相机射线 `d_c`，有限球面前向映射为：
+
+```text
+d_p = R_p_c * d_c
+o_p = t_p_c
+a = o_p.dot(d_p)
+Delta = a*a - o_p.squaredNorm() + r*r
+s = -a + sqrt(Delta)
+q_p = o_p + s*d_p
+n_p = normalize(q_p)
+```
+
+要求相机中心严格位于半径 r 的球内、`Delta>=0` 且 `s>epsilon`。因此该实现确实
+使用 camera translation，不能与旧 `pixel -> bearing_b -> ERP` 混称为同一种
+映射。旧 ERP 仍在 `spherical_geometry` 中承担 bearing 参数化、极线显示、调试
+和无穷远方向近似，语义与上下方向均未改变。
+
+USPM 采用自洽且独立记录的论文轴约定：
+
+```text
+theta = atan2(n_p.x, n_p.z)
+phi   = asin(n_p.y)
+n_p   = [cos(phi)*sin(theta), sin(phi), cos(phi)*cos(theta)]
+u     = width  * (theta/horizontal_fov + 0.5)
+v     = height * (phi/vertical_fov + 0.5)
+```
+
+逆映射先由连续 `(u,v)` 恢复 `theta,phi` 和 `q_p=r*n_p`，再对指定相机计算
+`bearing_c=normalize(R_p_c.transpose()*(q_p-t_p_c))` 并调用相机模型投影。完整
+360 度的 u 周期化，两个 pole 均作为连续边界保留；这些坐标是连续几何坐标，
+不是可直接索引 `cv::Mat` 的整数。公开 PDF 公式排版/文本解析中可能混淆逆变换
+的 sin/cos 顺序，本项目没有机械复制歧义式，而是选用与 `atan2(x,z)` 严格互逆
+并由 seam、pole、角度、bearing 和 pixel 闭环测试验证的顺序；这不宣称是未经
+验证的论文官方源码实现。
+
+`sphere_radius` 是配置项，当前 1.0 m 只是初始 project implementation choice。
+公开论文未给出该设备唯一固定 radius，项目也没有论文完整官方源码。测试覆盖
+0.10/0.25/0.50/1/2/10/100 m，并验证半径增大时有限平移影响单调趋近零。核心库
+仅依赖 Eigen、标准库和 `sphere_vio_camera`，不依赖 ROS、rosbag、sensor_msgs、
+cv_bridge 或 OpenCV GUI。
+
+Phase 5A 尚未生成或融合全景图像，未在 panorama 上运行 FAST，未创建全局
+`SphericalFeatureId`，也未实现 HOFA、patch alignment、depth/inverse-depth
+filter 或 ESKF。可选稀疏 USPM visualizer 扩展也留待后续；现有
+`--show-spherical-coverage` 仍明确是 direction-only Body ERP 面板。
+
 当前优先级为：
 
 ```text
