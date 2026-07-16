@@ -990,6 +990,30 @@ pixel -> bearing_c -> bearing_b
 逆深度估计。`config/system.yaml` 中的 Phase 4A 参数仍是初始调试参数，尚未
 针对最终运动与光照条件完成调优。
 
+Phase 4B：跨相机描述子候选匹配与球面极线过滤已实现。ORB 只在
+TemporalFrontend 已接受的当前时序特征位置调用 `compute()`，不会重新检测另一
+套关键点。OpenCV 返回的 KeyPoint 使用局部轨迹数组索引映射回完整的 64 位
+FeatureId，边界点或 ORB 删除关键点时不会造成描述子行错位。
+
+默认只处理权威 Kalibr `cam_overlaps` 对应的项目相机对：
+
+```text
+Kalibr cam0-cam1 -> project C0-C1
+Kalibr cam0-cam3 -> project C0-C2
+Kalibr cam1-cam2 -> project C1-C3
+Kalibr cam2-cam3 -> project C2-C3 (canonical unordered order)
+```
+
+每个无向相机对只配置一次。候选依次使用 Hamming 最大距离、严格 ratio test、
+双向最佳一致性、球面对称极线角误差和相机对内一对一约束过滤。极线阈值单位为
+radian，不使用 ERP 距离、水平视差或未归一化代数残差。冲突候选依次按描述子
+距离、最大极线误差和两端 FeatureId 稳定排序。
+
+FeatureId 仍只表示单相机时序轨迹；CrossCameraMatch 只是当前帧中某一相机对的
+候选关系，不是 LandmarkId，也不跨帧合并。Phase 4B 不调用三角化，不输出深度
+或逆深度。`config/system.yaml` 中的 ORB、Hamming、ratio 和极线角阈值仍为
+真实 bag 统计所用的初始基线参数，尚无 ground truth 精度结论。
+
 当前优先级为：
 
 ```text

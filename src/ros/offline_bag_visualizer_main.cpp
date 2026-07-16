@@ -22,6 +22,10 @@ struct CommandLineOptions {
   bool show_spherical_coverage = false;
   bool show_epipolar_curve = false;
   bool show_temporal_features = false;
+  bool show_cross_camera_matches = false;
+  int match_camera_1 = 0;
+  int match_camera_2 = 1;
+  std::size_t maximum_displayed_matches = 60U;
   std::string frontend_config_file;
   std::string camera_config_file;
   int epipolar_source_camera = 0;
@@ -42,6 +46,10 @@ void printUsage() {
          "  --cameras FILE           Camera YAML for geometry overlays\n"
          "  --show-epipolar-curve   Draw a calibrated spherical epipolar curve\n"
          "  --show-temporal-features  Draw same-camera LK feature tracks\n"
+         "  --show-cross-camera-matches  Draw one configured overlap pair\n"
+         "  --match-camera-1 ID    First cross-camera id (default: 0)\n"
+         "  --match-camera-2 ID    Second cross-camera id (default: 1)\n"
+         "  --maximum-displayed-matches N  Display cap (default: 60)\n"
          "  --frontend-config FILE Frontend YAML (default: sibling system.yaml)\n"
          "  --epipolar-source-camera ID  Source camera C0..C3 (default: 0)\n"
          "  --epipolar-target-camera ID  Target camera C0..C3 (default: 1)\n"
@@ -77,6 +85,19 @@ bool parseCameraId(const std::string& text, int* camera_id) {
   }
 }
 
+bool parsePositiveSize(const std::string& text, std::size_t* value) {
+  if (!value) return false;
+  try {
+    std::size_t consumed = 0U;
+    const unsigned long parsed = std::stoul(text, &consumed);
+    if (consumed != text.size() || parsed == 0UL) return false;
+    *value = static_cast<std::size_t>(parsed);
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
 bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
                       bool* help_requested, std::string* error) {
   if (!options || !help_requested) return false;
@@ -97,6 +118,10 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
     }
     if (argument == "--show-temporal-features") {
       options->show_temporal_features = true;
+      continue;
+    }
+    if (argument == "--show-cross-camera-matches") {
+      options->show_cross_camera_matches = true;
       continue;
     }
     if (index + 1 >= argc) {
@@ -134,6 +159,22 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       options->camera_config_file = value;
     } else if (argument == "--frontend-config") {
       options->frontend_config_file = value;
+    } else if (argument == "--match-camera-1") {
+      if (!parseCameraId(value, &options->match_camera_1)) {
+        if (error) *error = "invalid --match-camera-1 value: " + value;
+        return false;
+      }
+    } else if (argument == "--match-camera-2") {
+      if (!parseCameraId(value, &options->match_camera_2)) {
+        if (error) *error = "invalid --match-camera-2 value: " + value;
+        return false;
+      }
+    } else if (argument == "--maximum-displayed-matches") {
+      if (!parsePositiveSize(value, &options->maximum_displayed_matches)) {
+        if (error) *error =
+            "invalid --maximum-displayed-matches value: " + value;
+        return false;
+      }
     } else if (argument == "--epipolar-source-camera") {
       if (!parseCameraId(value, &options->epipolar_source_camera)) {
         if (error) *error = "invalid source camera id: " + value;
@@ -178,6 +219,11 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
   if (options->show_epipolar_curve &&
       options->epipolar_source_camera == options->epipolar_target_camera) {
     if (error) *error = "epipolar source and target cameras must differ";
+    return false;
+  }
+  if (options->show_cross_camera_matches &&
+      options->match_camera_1 == options->match_camera_2) {
+    if (error) *error = "cross-camera match cameras must differ";
     return false;
   }
   if (options->epipolar_source_u < 0.0 &&
@@ -242,6 +288,14 @@ int main(int argc, char** argv) {
   options.show_spherical_coverage = command_line.show_spherical_coverage;
   options.show_epipolar_curve = command_line.show_epipolar_curve;
   options.show_temporal_features = command_line.show_temporal_features;
+  options.show_cross_camera_matches =
+      command_line.show_cross_camera_matches;
+  options.match_camera_1 =
+      static_cast<sphere_vio::CameraId>(command_line.match_camera_1);
+  options.match_camera_2 =
+      static_cast<sphere_vio::CameraId>(command_line.match_camera_2);
+  options.maximum_displayed_matches =
+      command_line.maximum_displayed_matches;
   options.camera_config_file = command_line.camera_config_file.empty()
                                    ? siblingCameraConfigPath(
                                          command_line.config_file)
@@ -250,7 +304,7 @@ int main(int argc, char** argv) {
   options.epipolar_target_camera = command_line.epipolar_target_camera;
   options.epipolar_source_u = command_line.epipolar_source_u;
   options.epipolar_source_v = command_line.epipolar_source_v;
-  if (options.show_temporal_features) {
+  if (options.show_temporal_features || options.show_cross_camera_matches) {
     const std::string frontend_config =
         command_line.frontend_config_file.empty()
             ? siblingSystemConfigPath(command_line.config_file)
@@ -258,6 +312,26 @@ int main(int argc, char** argv) {
     if (!sphere_vio::loadTemporalFrontendOptions(frontend_config,
                                                   &options.frontend, &error)) {
       std::cerr << "Invalid frontend configuration: " << error << std::endl;
+      return EXIT_FAILURE;
+    }
+  }
+  if (options.show_cross_camera_matches) {
+    const std::string frontend_config =
+        command_line.frontend_config_file.empty()
+            ? siblingSystemConfigPath(command_line.config_file)
+            : command_line.frontend_config_file;
+    if (!sphere_vio::loadCrossCameraOptions(
+            frontend_config, &options.descriptor, &options.matcher, &error)) {
+      std::cerr << "Invalid cross-camera configuration: " << error
+                << std::endl;
+      return EXIT_FAILURE;
+    }
+    const sphere_vio::CrossCameraMatcher matcher(options.matcher);
+    if (!matcher.isConfiguredPair(options.match_camera_1,
+                                  options.match_camera_2)) {
+      std::cerr << "Requested pair C" << options.match_camera_1 << "-C"
+                << options.match_camera_2
+                << " is not a configured Kalibr overlap pair." << std::endl;
       return EXIT_FAILURE;
     }
   }

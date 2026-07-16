@@ -19,6 +19,7 @@ struct CommandLineOptions {
   double duration = -1.0;
   bool has_start_offset = false;
   bool has_duration = false;
+  bool cross_camera_matching = false;
 };
 
 void printUsage() {
@@ -29,6 +30,7 @@ void printUsage() {
          "  --cameras FILE         Camera YAML (default: sibling cameras.yaml)\n"
          "  --start-offset SEC     Offset from bag start\n"
          "  --duration SEC         Negative means through bag end\n"
+         "  --cross-camera-matching  Enable configured overlap-pair matching\n"
          "  --help                 Show this message"
       << std::endl;
 }
@@ -55,6 +57,10 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
     if (argument == "--help" || argument == "-h") {
       *help_requested = true;
       return true;
+    }
+    if (argument == "--cross-camera-matching") {
+      options->cross_camera_matching = true;
+      continue;
     }
     if (i + 1 >= argc) {
       if (error) *error = "missing value after " + argument;
@@ -131,6 +137,13 @@ int main(int argc, char** argv) {
   if (!sphere_vio::loadTemporalFrontendOptions(
           frontend_config, &options.frontend, &error)) {
     std::cerr << "Invalid frontend configuration: " << error << std::endl;
+    return EXIT_FAILURE;
+  }
+  options.cross_camera_matching = command_line.cross_camera_matching;
+  if (options.cross_camera_matching &&
+      !sphere_vio::loadCrossCameraOptions(
+          frontend_config, &options.descriptor, &options.matcher, &error)) {
+    std::cerr << "Invalid cross-camera configuration: " << error << std::endl;
     return EXIT_FAILURE;
   }
   options.camera_config_file =

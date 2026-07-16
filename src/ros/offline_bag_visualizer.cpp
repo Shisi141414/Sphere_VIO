@@ -23,6 +23,8 @@
 
 #include "sphere_vio/imu_interval_buffer.hpp"
 #include "sphere_vio/common/camera_rig_loader.hpp"
+#include "sphere_vio/frontend/cross_camera_matcher.hpp"
+#include "sphere_vio/frontend/orb_descriptor_extractor.hpp"
 #include "sphere_vio/geometry/epipolar_geometry.hpp"
 #include "sphere_vio/geometry/spherical_geometry.hpp"
 #include "sphere_vio/frontend/temporal_frontend.hpp"
@@ -435,6 +437,74 @@ void drawTemporalFeatureOverlay(const CameraTrackingResult& tracking,
                      cv::Scalar(80, 190, 255));
 }
 
+void drawCrossCameraMatchOverlay(
+    const CrossCameraPairResult& matching, std::size_t maximum_matches,
+    const std::array<cv::Point2d, 4>& image_offsets,
+    const std::array<cv::Point2d, 4>& image_scales, cv::Mat* canvas) {
+  if (!canvas || canvas->empty()) return;
+  const std::size_t displayed =
+      std::min(maximum_matches, matching.matches.size());
+  const cv::Scalar line_color(255, 120, 40);
+  const cv::Scalar first_color(80, 255, 255);
+  const cv::Scalar second_color(255, 80, 255);
+  const auto canvas_point = [&](CameraId camera_id,
+                                const Eigen::Vector2d& pixel) {
+    return cv::Point(
+        static_cast<int>(std::lround(
+            image_offsets[camera_id].x +
+            pixel.x() * image_scales[camera_id].x)),
+        static_cast<int>(std::lround(
+            image_offsets[camera_id].y +
+            pixel.y() * image_scales[camera_id].y)));
+  };
+  for (std::size_t index = 0U; index < displayed; ++index) {
+    const CrossCameraMatch& match = matching.matches[index];
+    const cv::Point first = canvas_point(match.camera_id_1, match.pixel_1);
+    const cv::Point second = canvas_point(match.camera_id_2, match.pixel_2);
+    cv::line(*canvas, first, second, line_color, 1, cv::LINE_AA);
+    cv::circle(*canvas, first, 5, first_color, 2, cv::LINE_AA);
+    cv::circle(*canvas, second, 5, second_color, 2, cv::LINE_AA);
+    if (index < 12U) {
+      std::ostringstream label;
+      label << std::fixed << std::setprecision(3) << match.descriptor_distance
+            << "/" << match.epipolar_error_maximum;
+      const cv::Point midpoint((first.x + second.x) / 2,
+                               (first.y + second.y) / 2);
+      drawTextWithShadow(canvas, label.str(), midpoint, 0.32,
+                         cv::Scalar(255, 255, 255));
+    }
+  }
+
+  const int box_width = std::min(700, canvas->cols);
+  const int box_x = std::max(
+      0, std::min(canvas->cols - box_width,
+                  static_cast<int>(image_offsets[matching.camera_id_1].x)));
+  const int requested_y =
+      static_cast<int>(image_offsets[matching.camera_id_1].y) + 70;
+  const int box_y = std::max(0, std::min(canvas->rows - 122, requested_y));
+  const cv::Rect box(box_x, box_y, box_width, std::min(122, canvas->rows));
+  cv::rectangle(*canvas, box, cv::Scalar(12, 12, 16), cv::FILLED);
+  drawTextWithShadow(canvas, "CROSS-CAMERA CANDIDATE MATCHES",
+                     box.tl() + cv::Point(10, 22), 0.48, line_color);
+  drawTextWithShadow(canvas,
+                     "DESCRIPTOR + SPHERICAL EPIPOLAR FILTER",
+                     box.tl() + cv::Point(10, 45), 0.43,
+                     cv::Scalar(255, 255, 255));
+  std::ostringstream pair_text;
+  pair_text << "C" << matching.camera_id_1 << "-C" << matching.camera_id_2
+            << " FINAL " << matching.matches.size() << " DISPLAYED "
+            << displayed;
+  drawTextWithShadow(canvas, pair_text.str(),
+                     box.tl() + cv::Point(10, 68), 0.43,
+                     cv::Scalar(255, 255, 255));
+  drawTextWithShadow(canvas, "NO TRIANGULATION | NO DEPTH",
+                     box.tl() + cv::Point(10, 91), 0.43,
+                     cv::Scalar(80, 190, 255));
+  drawTextWithShadow(canvas, "NO LANDMARK ASSOCIATION",
+                     box.tl() + cv::Point(10, 114), 0.43,
+                     cv::Scalar(80, 190, 255));
+}
+
 void appendSphericalCoveragePanel(const cv::Mat& panel, cv::Mat* canvas) {
   if (!canvas || canvas->empty() || panel.empty()) return;
   cv::Mat displayed_panel = panel;
@@ -508,6 +578,8 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
                  const cv::Mat* spherical_coverage_panel,
                  const EpipolarCurveOverlay* epipolar_curve_overlay,
                  const MultiCameraTrackingResult* temporal_tracking,
+                 const CrossCameraPairResult* cross_camera_matching,
+                 std::size_t maximum_displayed_matches,
                  std::string* error) {
   if (!canvas || !interval_statistics) return false;
   if (frame.images.size() != FrameAssembler::kCameraCount) {
@@ -548,6 +620,8 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
   const int canvas_height = kStatusHeight + 2 * cell_height + kTimelineHeight;
   *canvas = cv::Mat(canvas_height, canvas_width, CV_8UC3,
                     cv::Scalar(18, 18, 18));
+  std::array<cv::Point2d, 4> image_offsets;
+  std::array<cv::Point2d, 4> image_scales;
 
   for (std::size_t camera_id = 0; camera_id < images.size(); ++camera_id) {
     cv::Mat bgr;
@@ -584,6 +658,10 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
     const int cell_y = kStatusHeight + row * cell_height;
     const int offset_x = cell_x + (cell_width - resized.cols) / 2;
     const int offset_y = cell_y + (cell_height - resized.rows) / 2;
+    image_offsets[camera_id] = cv::Point2d(offset_x, offset_y);
+    image_scales[camera_id] = cv::Point2d(
+        static_cast<double>(resized.cols) / bgr.cols,
+        static_cast<double>(resized.rows) / bgr.rows);
     resized.copyTo((*canvas)(cv::Rect(offset_x, offset_y, resized.cols,
                                       resized.rows)));
 
@@ -602,7 +680,6 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
             imageEncoding(images[camera_id]->image),
         text_origin + cv::Point(0, 41), 0.43, cv::Scalar(255, 255, 255));
   }
-
   *interval_statistics = calculateIntervalStatistics(
       first_frame, imu_measurements, imu_gap_warning);
   const IntervalDisplayStatistics& imu = *interval_statistics;
@@ -733,6 +810,11 @@ bool renderFrame(const MultiCameraFrame& frame, std::uint64_t frame_index,
       }
     }
   }
+  if (cross_camera_matching) {
+    drawCrossCameraMatchOverlay(*cross_camera_matching,
+                                maximum_displayed_matches, image_offsets,
+                                image_scales, canvas);
+  }
   if (spherical_coverage_panel) {
     appendSphericalCoveragePanel(*spherical_coverage_panel, canvas);
   }
@@ -821,7 +903,7 @@ OfflineBagVisualizer::OfflineBagVisualizer(OfflineBagVisualizerOptions options)
 int OfflineBagVisualizer::run() {
   CameraRig temporal_camera_rig;
   std::unique_ptr<TemporalFrontend> temporal_frontend;
-  if (options_.show_temporal_features) {
+  if (options_.show_temporal_features || options_.show_cross_camera_matches) {
     std::string rig_error;
     if (!loadCameraRigFromYaml(options_.camera_config_file,
                                &temporal_camera_rig, &rig_error)) {
@@ -830,6 +912,18 @@ int OfflineBagVisualizer::run() {
       return 2;
     }
     temporal_frontend.reset(new TemporalFrontend(options_.frontend));
+  }
+  std::unique_ptr<OrbDescriptorExtractor> descriptor_extractor;
+  std::unique_ptr<CrossCameraMatcher> cross_camera_matcher;
+  if (options_.show_cross_camera_matches) {
+    descriptor_extractor.reset(new OrbDescriptorExtractor(options_.descriptor));
+    cross_camera_matcher.reset(new CrossCameraMatcher(options_.matcher));
+    if (!cross_camera_matcher->isConfiguredPair(options_.match_camera_1,
+                                                options_.match_camera_2)) {
+      std::cerr << "Requested pair is not a configured Kalibr overlap pair."
+                << std::endl;
+      return 2;
+    }
   }
   cv::Mat spherical_coverage_panel;
   if (options_.show_spherical_coverage) {
@@ -868,6 +962,11 @@ int OfflineBagVisualizer::run() {
   if (options_.show_temporal_features) {
     std::cout << "  temporal features: enabled (same-camera LK only)"
               << std::endl;
+  }
+  if (options_.show_cross_camera_matches) {
+    std::cout << "  cross-camera candidates: enabled for C"
+              << options_.match_camera_1 << "-C" << options_.match_camera_2
+              << " (no triangulation or depth)" << std::endl;
   }
 
   rosbag::Bag bag;
@@ -975,6 +1074,43 @@ int OfflineBagVisualizer::run() {
       visualization_error = true;
       return false;
     }
+    CrossCameraPairResult cross_camera_result;
+    if (cross_camera_matcher) {
+      std::array<const ImageFrame*, 4> images{{nullptr, nullptr, nullptr,
+                                               nullptr}};
+      for (const ImageFrame& image : frame.images) {
+        if (image.camera_id >= 4U || images[image.camera_id] != nullptr) {
+          visualization_error = true;
+          return false;
+        }
+        images[image.camera_id] = &image;
+      }
+      if (!images[options_.match_camera_1] ||
+          !images[options_.match_camera_2]) {
+        visualization_error = true;
+        return false;
+      }
+      CameraDescriptorSet first_descriptors;
+      CameraDescriptorSet second_descriptors;
+      DescriptorExtractionStatistics first_statistics;
+      DescriptorExtractionStatistics second_statistics;
+      if (!descriptor_extractor->extract(
+              images[options_.match_camera_1]->image,
+              temporal_tracking.cameras[options_.match_camera_1],
+              &first_descriptors, &first_statistics) ||
+          !descriptor_extractor->extract(
+              images[options_.match_camera_2]->image,
+              temporal_tracking.cameras[options_.match_camera_2],
+              &second_descriptors, &second_statistics) ||
+          !cross_camera_matcher->matchPair(
+              first_descriptors, second_descriptors, temporal_camera_rig,
+              &cross_camera_result)) {
+        std::cerr << "Cross-camera visualization matching failed at "
+                  << formatTimestamp(frame.timestamp) << std::endl;
+        visualization_error = true;
+        return false;
+      }
+    }
     if (!renderFrame(frame, run_statistics.processed_frames + 1, first_frame,
                      previous_frame_time, interval, options_.imu_gap_warning,
                      playback.paused(), &canvas, &interval_statistics,
@@ -985,6 +1121,8 @@ int OfflineBagVisualizer::run() {
                          ? &epipolar_curve_overlay
                          : nullptr,
                      temporal_frontend ? &temporal_tracking : nullptr,
+                     cross_camera_matcher ? &cross_camera_result : nullptr,
+                     options_.maximum_displayed_matches,
                      &render_error)) {
       std::cerr << "Cannot render frame: " << render_error << std::endl;
       visualization_error = true;

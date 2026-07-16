@@ -159,12 +159,15 @@ add_library(sphere_vio_geometry
 )
 
 add_library(sphere_vio_frontend
+  src/frontend/cross_camera_matcher.cpp
   src/frontend/feature_detector.cpp
   src/frontend/feature_tracker.cpp
+  src/frontend/orb_descriptor_extractor.cpp
   src/frontend/temporal_frontend.cpp
 )
 target_link_libraries(sphere_vio_frontend
   sphere_vio_camera
+  sphere_vio_geometry
   opencv_core
   opencv_imgproc
   opencv_features2d
@@ -442,6 +445,31 @@ if(CATKIN_ENABLE_TESTING)
     )
     target_link_libraries(test_temporal_frontend
       sphere_vio_frontend
+      sphere_vio_camera
+      yaml-cpp
+    )
+  endif()
+  catkin_add_gtest(test_orb_descriptor_extractor
+    test/test_main.cpp
+    test/test_orb_descriptor_extractor.cpp
+  )
+  if(TARGET test_orb_descriptor_extractor)
+    target_link_libraries(test_orb_descriptor_extractor
+      sphere_vio_frontend
+      sphere_vio_camera
+    )
+  endif()
+  catkin_add_gtest(test_cross_camera_matcher
+    test/test_main.cpp
+    test/test_cross_camera_matcher.cpp
+  )
+  if(TARGET test_cross_camera_matcher)
+    target_compile_definitions(test_cross_camera_matcher PRIVATE
+      SPHERE_VIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_cross_camera_matcher
+      sphere_vio_frontend
+      sphere_vio_geometry
       sphere_vio_camera
       yaml-cpp
     )

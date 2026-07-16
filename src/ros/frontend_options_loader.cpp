@@ -1,6 +1,9 @@
 #include "sphere_vio/ros/frontend_options_loader.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <set>
+#include <utility>
 
 #include <yaml-cpp/yaml.h>
 
@@ -76,6 +79,86 @@ bool loadTemporalFrontendOptions(const std::string& config_file,
       !std::isfinite(options->redetection_ratio) ||
       options->redetection_ratio < 0.0 || options->redetection_ratio > 1.0) {
     if (error) *error = "frontend parameters are outside their valid range";
+    return false;
+  }
+  return true;
+}
+
+bool loadCrossCameraOptions(
+    const std::string& config_file,
+    OrbDescriptorExtractorOptions* descriptor_options,
+    CrossCameraMatcherOptions* matcher_options, std::string* error) {
+  if (!descriptor_options || !matcher_options) return false;
+  try {
+    const YAML::Node root = YAML::LoadFile(config_file);
+    const YAML::Node cross_camera = root["frontend"]["cross_camera"];
+    if (!cross_camera) {
+      if (error) *error = "missing frontend.cross_camera section";
+      return false;
+    }
+    readIfPresent(cross_camera, "orb_patch_size",
+                  &descriptor_options->patch_size);
+    readIfPresent(cross_camera, "orb_edge_threshold",
+                  &descriptor_options->edge_threshold);
+    readIfPresent(cross_camera, "orb_levels", &descriptor_options->levels);
+    readIfPresent(cross_camera, "orb_scale_factor",
+                  &descriptor_options->scale_factor);
+    readIfPresent(cross_camera, "orb_fast_threshold",
+                  &descriptor_options->fast_threshold);
+    readIfPresent(cross_camera, "maximum_descriptor_distance",
+                  &matcher_options->maximum_descriptor_distance);
+    readIfPresent(cross_camera, "ratio_test", &matcher_options->ratio_test);
+    readIfPresent(cross_camera, "require_mutual_best",
+                  &matcher_options->require_mutual_best);
+    readIfPresent(cross_camera, "maximum_epipolar_angle",
+                  &matcher_options->maximum_epipolar_angle);
+
+    const YAML::Node pairs = cross_camera["camera_pairs"];
+    if (!pairs || !pairs.IsSequence()) {
+      if (error) *error = "cross-camera camera_pairs must be a sequence";
+      return false;
+    }
+    matcher_options->camera_pairs.clear();
+    for (const YAML::Node& pair : pairs) {
+      if (!pair.IsSequence() || pair.size() != 2U) {
+        if (error) *error = "each camera pair must contain exactly two ids";
+        return false;
+      }
+      CameraId first = pair[0].as<CameraId>();
+      CameraId second = pair[1].as<CameraId>();
+      if (first > second) std::swap(first, second);
+      matcher_options->camera_pairs.emplace_back(first, second);
+    }
+  } catch (const YAML::Exception& exception) {
+    if (error) *error = exception.what();
+    return false;
+  }
+
+  std::sort(matcher_options->camera_pairs.begin(),
+            matcher_options->camera_pairs.end());
+  std::set<std::pair<CameraId, CameraId>> unique_pairs;
+  for (const auto& pair : matcher_options->camera_pairs) {
+    if (pair.first >= 4U || pair.second >= 4U || pair.first >= pair.second ||
+        !unique_pairs.insert(pair).second) {
+      if (error) *error = "cross-camera pairs are invalid or duplicated";
+      return false;
+    }
+  }
+  if (matcher_options->camera_pairs.empty() ||
+      descriptor_options->patch_size <= 0 ||
+      descriptor_options->patch_size % 2 != 1 ||
+      descriptor_options->edge_threshold < 0 ||
+      descriptor_options->levels <= 0 ||
+      !std::isfinite(descriptor_options->scale_factor) ||
+      descriptor_options->scale_factor <= 1.0 ||
+      descriptor_options->fast_threshold < 0 ||
+      !std::isfinite(matcher_options->maximum_descriptor_distance) ||
+      matcher_options->maximum_descriptor_distance < 0.0 ||
+      !std::isfinite(matcher_options->ratio_test) ||
+      matcher_options->ratio_test <= 0.0 || matcher_options->ratio_test >= 1.0 ||
+      !std::isfinite(matcher_options->maximum_epipolar_angle) ||
+      matcher_options->maximum_epipolar_angle < 0.0) {
+    if (error) *error = "cross-camera parameters are outside valid ranges";
     return false;
   }
   return true;
