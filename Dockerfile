@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # Sphere-VIO is a ROS 1 Noetic catkin package.  Use an official ROS Noetic
 # image so the build and the offline bag tools see the expected ABI.
 FROM ros:noetic-ros-base-focal

@@ -17,13 +17,20 @@
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
 #include <sensor_msgs/Image.h>
+#include <sensor_msgs/Imu.h>
 
+#include "sphere_vio/backend/eskf.hpp"
+#include "sphere_vio/backend/landmark_map.hpp"
 #include "sphere_vio/common/camera_rig_loader.hpp"
+#include "sphere_vio/imu_interval_buffer.hpp"
 #include "sphere_vio/frontend/cross_camera_matcher.hpp"
 #include "sphere_vio/frontend/orb_descriptor_extractor.hpp"
 #include "sphere_vio/frontend/landmark_track_manager.hpp"
 #include "sphere_vio/frontend/triangulation_candidate_evaluator.hpp"
 #include "sphere_vio/ros/frame_assembler.hpp"
+#include "sphere_vio/ros/output_recorder.hpp"
+#include "sphere_vio/ros/ros_conversions.hpp"
+#include "sphere_vio/ros/ros_output.hpp"
 
 namespace sphere_vio {
 namespace {
@@ -721,6 +728,28 @@ int OfflineFeatureRunner::run() {
     landmark_track_manager.reset(
         new LandmarkTrackManager(options_.landmark_track));
   }
+  std::unique_ptr<Eskf> backend;
+  std::unique_ptr<BackendLandmarkMap> backend_landmarks;
+  std::unique_ptr<RosOutput> ros_output;
+  OutputRecorder output_recorder;
+  if (options_.enable_backend) {
+    backend.reset(new Eskf(options_.backend));
+    backend_landmarks.reset(new BackendLandmarkMap());
+  }
+  if (options_.publish_ros) {
+    ros_output.reset(new RosOutput());
+  }
+  if (!options_.output_directory.empty() &&
+      !output_recorder.open(options_.output_directory)) {
+    std::cerr << "Cannot open output directory: "
+              << options_.output_directory << std::endl;
+    bag.close();
+    return 8;
+  }
+  ImuIntervalBuffer backend_imu_buffer(
+      options_.bag.maximum_imu_time_difference);
+  bool backend_has_frame = false;
+  Timestamp backend_previous_frame_time = 0.0;
   std::array<CameraRunStatistics, 4> run_statistics;
   std::array<DescriptorRunStatistics, 4> descriptor_statistics;
   std::vector<PairRunStatistics> pair_statistics(
@@ -740,6 +769,17 @@ int OfflineFeatureRunner::run() {
   double maximum_cross_camera_processing_time = 0.0;
 
   for (const rosbag::MessageInstance& instance : view) {
+    if (topicMatches(instance.getTopic(), options_.bag.imu_topic)) {
+      const sensor_msgs::ImuConstPtr message =
+          instance.instantiate<sensor_msgs::Imu>();
+      if (message) {
+        ImuMeasurement measurement;
+        if (convertImuMessage(*message, &measurement)) {
+          backend_imu_buffer.add(measurement);
+        }
+      }
+      continue;
+    }
     for (CameraId camera_id = 0U; camera_id < FrameAssembler::kCameraCount;
          ++camera_id) {
       if (!topicMatches(instance.getTopic(),
@@ -762,6 +802,24 @@ int OfflineFeatureRunner::run() {
         return 6;
       }
       ++completed_frames;
+
+      if (backend) {
+        const std::vector<ImuMeasurement> interval =
+            backend_imu_buffer.extract(
+                backend_has_frame ? backend_previous_frame_time : 0.0,
+                frame.timestamp);
+        if (!backend->initialized()) {
+          if (!interval.empty()) {
+            backend->initialize(interval.front());
+            backend->propagate(interval, frame.timestamp);
+          }
+        } else {
+          backend->propagate(interval, frame.timestamp);
+        }
+        backend_has_frame = true;
+        backend_previous_frame_time = frame.timestamp;
+      }
+
       for (CameraId id = 0U; id < 4U; ++id)
         addResult(tracking_result.cameras[id], &run_statistics[id]);
 
@@ -887,6 +945,22 @@ int OfflineFeatureRunner::run() {
           addLandmarkFrameResult(candidate_results, landmark_result,
                                  *landmark_track_manager,
                                  &landmark_statistics);
+
+          if (backend && backend_landmarks && backend->initialized()) {
+            for (const LandmarkTrack& track :
+                 landmark_track_manager->activeTracks()) {
+              Eigen::Vector3d body_point;
+              Eigen::Vector3d world_measurement;
+              bool is_new = false;
+              if (backend_landmarks->observe(track, backend->state(),
+                                             &body_point,
+                                             &world_measurement, &is_new) &&
+                  !is_new) {
+                backend->updatePosition(world_measurement, body_point,
+                                        options_.backend_position_noise);
+              }
+            }
+          }
         }
         const double cross_camera_processing_time =
             std::chrono::duration<double>(std::chrono::steady_clock::now() -
@@ -896,6 +970,15 @@ int OfflineFeatureRunner::run() {
         maximum_cross_camera_processing_time =
             std::max(maximum_cross_camera_processing_time,
                      cross_camera_processing_time);
+      }
+
+      if (backend && backend_landmarks && backend->initialized()) {
+        output_recorder.record(backend->state(),
+                               backend_landmarks->landmarks());
+        if (ros_output) {
+          ros_output->publish(backend->state(), backend->covariance(),
+                              backend_landmarks->landmarks());
+        }
       }
 
       if (options_.bag.progress_interval_frames > 0 &&
@@ -1083,11 +1166,12 @@ int OfflineFeatureRunner::run() {
         printCandidateStatistics(sweep.global, "GLOBAL", "    ", false);
       }
     }
-    if (options_.landmark_tracks && landmark_track_manager) {
+  if (options_.landmark_tracks && landmark_track_manager) {
       printLandmarkSummary(landmark_statistics, *landmark_track_manager,
                            completed_frames);
     }
   }
+  output_recorder.close();
   return completed_frames == 0U ? 7 : 0;
 }
 

@@ -5,6 +5,8 @@
 #include <string>
 #include <utility>
 
+#include <ros/ros.h>
+
 #include "sphere_vio/ros/frontend_options_loader.hpp"
 #include "sphere_vio/ros/offline_feature_runner.hpp"
 
@@ -23,6 +25,10 @@ struct CommandLineOptions {
   bool triangulation_candidates = false;
   bool triangulation_threshold_sweep = false;
   bool landmark_tracks = false;
+  bool enable_backend = false;
+  double backend_position_noise = 0.20;
+  std::string output_directory;
+  bool publish_ros = false;
 };
 
 void printUsage() {
@@ -37,6 +43,10 @@ void printUsage() {
          "  --triangulation-candidates  Evaluate current-frame geometric candidates\n"
          "  --triangulation-threshold-sweep  Add single-variable gate scans\n"
          "  --landmark-tracks  Enable observation-association hypotheses\n"
+         "  --esfk  Enable ESKF/IMU backend and publish/record outputs\n"
+         "  --backend-position-noise VALUE  Landmark position update sigma\n"
+         "  --output-dir DIR  Save odometry.csv and landmarks.csv\n"
+         "  --publish-ros  Publish odometry/path/TF/landmarks\n"
          "  --help                 Show this message"
       << std::endl;
 }
@@ -85,6 +95,17 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       options->cross_camera_matching = true;
       continue;
     }
+    if (argument == "--esfk") {
+      options->enable_backend = true;
+      options->landmark_tracks = true;
+      options->triangulation_candidates = true;
+      options->cross_camera_matching = true;
+      continue;
+    }
+    if (argument == "--publish-ros") {
+      options->publish_ros = true;
+      continue;
+    }
     if (i + 1 >= argc) {
       if (error) *error = "missing value after " + argument;
       return false;
@@ -104,6 +125,10 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
     } else if (argument == "--duration") {
       if (!parseDouble(value, &options->duration)) return false;
       options->has_duration = true;
+    } else if (argument == "--backend-position-noise") {
+      if (!parseDouble(value, &options->backend_position_noise)) return false;
+    } else if (argument == "--output-dir") {
+      options->output_directory = value;
     } else {
       if (error) *error = "unknown argument: " + argument;
       return false;
@@ -141,6 +166,8 @@ int main(int argc, char** argv) {
     printUsage();
     return EXIT_SUCCESS;
   }
+  ros::init(argc, argv, "sphere_vio_feature_runner",
+            ros::init_options::AnonymousName);
 
   sphere_vio::OfflineFeatureRunnerOptions options;
   if (!sphere_vio::loadOfflineBagConfiguration(
@@ -167,6 +194,10 @@ int main(int argc, char** argv) {
   options.triangulation_threshold_sweep =
       command_line.triangulation_threshold_sweep;
   options.landmark_tracks = command_line.landmark_tracks;
+  options.enable_backend = command_line.enable_backend;
+  options.backend_position_noise = command_line.backend_position_noise;
+  options.output_directory = command_line.output_directory;
+  options.publish_ros = command_line.publish_ros;
   if (options.cross_camera_matching &&
       !sphere_vio::loadCrossCameraOptions(
           frontend_config, &options.descriptor, &options.matcher, &error)) {

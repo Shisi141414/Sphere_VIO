@@ -120,7 +120,7 @@ find_package(yaml-cpp REQUIRED)
 catkin_package(
   INCLUDE_DIRS include
 #  LIBRARIES sphere_vio
-  LIBRARIES sphere_vio_core sphere_vio_camera sphere_vio_geometry sphere_vio_panorama sphere_vio_frontend sphere_vio_ros
+  LIBRARIES sphere_vio_core sphere_vio_camera sphere_vio_geometry sphere_vio_panorama sphere_vio_frontend sphere_vio_backend sphere_vio_ros
   CATKIN_DEPENDS cv_bridge geometry_msgs image_transport message_filters nav_msgs roscpp rosbag sensor_msgs std_msgs tf2 tf2_ros
   DEPENDS EIGEN3 OpenCV
 #  DEPENDS system_lib
@@ -186,19 +186,30 @@ target_link_libraries(sphere_vio_frontend
   opencv_video
 )
 
+add_library(sphere_vio_backend
+  src/backend/eskf.cpp
+  src/backend/landmark_map.cpp
+)
+target_link_libraries(sphere_vio_backend
+  sphere_vio_frontend
+)
+
 add_library(sphere_vio_ros
   src/ros/frame_assembler.cpp
   src/ros/frontend_options_loader.cpp
   src/ros/offline_bag_runner.cpp
   src/ros/offline_feature_runner.cpp
   src/ros/offline_panorama_runner.cpp
+  src/ros/output_recorder.cpp
   src/ros/ros_conversions.cpp
+  src/ros/ros_output.cpp
 )
 add_dependencies(sphere_vio_ros ${catkin_EXPORTED_TARGETS})
 target_link_libraries(sphere_vio_ros
   sphere_vio_core
   sphere_vio_camera
   sphere_vio_frontend
+  sphere_vio_backend
   sphere_vio_panorama
   ${catkin_LIBRARIES}
   opencv_core
@@ -313,6 +324,7 @@ target_link_libraries(sphere_vio_bag_visualizer
 install(TARGETS sphere_vio_core sphere_vio_camera sphere_vio_geometry
                 sphere_vio_panorama
                 sphere_vio_frontend
+                sphere_vio_backend
                 sphere_vio_ros sensor_inspector_node sphere_vio_bag_runner
                 sphere_vio_feature_runner sphere_vio_panorama_runner sphere_vio_bag_visualizer
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
@@ -559,5 +571,12 @@ if(CATKIN_ENABLE_TESTING)
       sphere_vio_geometry
       sphere_vio_camera
     )
+  endif()
+  catkin_add_gtest(test_eskf
+    test/test_main.cpp
+    test/test_eskf.cpp
+  )
+  if(TARGET test_eskf)
+    target_link_libraries(test_eskf sphere_vio_backend)
   endif()
 endif()

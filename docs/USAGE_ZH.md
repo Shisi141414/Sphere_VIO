@@ -17,11 +17,11 @@ ROS2 迁移方案（仅说明，暂不实施）、Docker 构建、Xlaunch 可视
   - 当前帧两视图三角化几何诊断
   - LandmarkTrack 观测关联与生命周期管理
   - 有限半径 USPM 全景逆重映射及首帧保存
+  - 初版 15 状态 ESKF/IMU 后端、地标地图、CSV 与 ROS 输出
 
 当前尚未实现
   - 跨帧逆深度滤波
-  - 后端 ESKF / IMU 融合
-  - odometry、轨迹、TF、地图点输出
+  - MSCKF 滑动窗口 clone 与严格球面重投影雅可比
   - HOFA 多层半直接对齐
 ```
 
@@ -335,6 +335,22 @@ rosrun sphere_vio sphere_vio_bag_visualizer \
 ```
 
 交互键：`Space` 暂停/继续，`N` 暂停时前进一帧，`Q` 或 `Esc` 退出。
+
+### 7.5 ESKF / IMU 后端
+
+```bash
+rosrun sphere_vio sphere_vio_feature_runner \
+  --config /root/catkin_ws/src/sphere_vio/config/offline.yaml \
+  --bag /data/sphere_algorithm_test.bag \
+  --cross-camera-matching \
+  --triangulation-candidates \
+  --landmark-tracks \
+  --esfk \
+  --output-dir /output/esfk
+```
+
+加上 `--publish-ros` 可发布 odometry、path、TF 和 landmark 点云，前提是容器外已经启动 `roscore`。ESKF 状态与地标 CSV 会写入 `--output-dir`。更完整的后端说明见
+`docs/BACKEND_ESKF_ZH.md`。
 
 ## 8. 重点指标及含义
 
