@@ -18,6 +18,7 @@ ROS2 迁移方案（仅说明，暂不实施）、Docker 构建、Xlaunch 可视
   - LandmarkTrack 观测关联与生命周期管理
   - 有限半径 USPM 全景逆重映射及首帧保存
   - 初版 15 状态 ESKF/IMU 后端、地标地图、CSV 与 ROS 输出
+  - MSCKF 滑动窗口、clone 增广/边缘化、omni-radtan 球面重投影更新
 
 当前尚未实现
   - 跨帧逆深度滤波
@@ -351,6 +352,10 @@ rosrun sphere_vio sphere_vio_feature_runner \
 
 加上 `--publish-ros` 可发布 odometry、path、TF 和 landmark 点云，前提是容器外已经启动 `roscore`。ESKF 状态与地标 CSV 会写入 `--output-dir`。更完整的后端说明见
 `docs/BACKEND_ESKF_ZH.md`。
+
+使用完整 MSCKF 滑动窗口时，把 `--esfk` 替换成 `--msckf`，其余参数相同。MSCKF
+会在每个同步图像帧增广 pose clone、用 `OmniRadtan` 球面投影构造视觉残差，并在
+超过窗口长度后边缘化最旧 clone。实现说明见 `docs/MSCKF_ZH.md`。
 
 ## 8. 重点指标及含义
 

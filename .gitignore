@@ -54,6 +54,7 @@ docs/*
 !docs/SPHERE_VIO_IMPLEMENTATION_GUIDE.md
 !docs/USAGE_ZH.md
 !docs/BACKEND_ESKF_ZH.md
+!docs/MSCKF_ZH.md
 
 # Temporary files
 *.log

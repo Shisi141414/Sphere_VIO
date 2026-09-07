@@ -21,6 +21,7 @@
 
 #include "sphere_vio/backend/eskf.hpp"
 #include "sphere_vio/backend/landmark_map.hpp"
+#include "sphere_vio/backend/msckf.hpp"
 #include "sphere_vio/common/camera_rig_loader.hpp"
 #include "sphere_vio/imu_interval_buffer.hpp"
 #include "sphere_vio/frontend/cross_camera_matcher.hpp"
@@ -729,10 +730,14 @@ int OfflineFeatureRunner::run() {
         new LandmarkTrackManager(options_.landmark_track));
   }
   std::unique_ptr<Eskf> backend;
+  std::unique_ptr<Msckf> msckf_backend;
   std::unique_ptr<BackendLandmarkMap> backend_landmarks;
   std::unique_ptr<RosOutput> ros_output;
   OutputRecorder output_recorder;
-  if (options_.enable_backend) {
+  if (options_.enable_msckf) {
+    msckf_backend.reset(new Msckf(options_.msckf));
+    backend_landmarks.reset(new BackendLandmarkMap());
+  } else if (options_.enable_backend) {
     backend.reset(new Eskf(options_.backend));
     backend_landmarks.reset(new BackendLandmarkMap());
   }
@@ -803,18 +808,32 @@ int OfflineFeatureRunner::run() {
       }
       ++completed_frames;
 
-      if (backend) {
+      if (backend || msckf_backend) {
         const std::vector<ImuMeasurement> interval =
             backend_imu_buffer.extract(
                 backend_has_frame ? backend_previous_frame_time : 0.0,
                 frame.timestamp);
-        if (!backend->initialized()) {
-          if (!interval.empty()) {
-            backend->initialize(interval.front());
+        if (msckf_backend) {
+          if (!msckf_backend->initialized()) {
+            if (!interval.empty()) {
+              msckf_backend->initialize(interval.front());
+              msckf_backend->propagate(interval, frame.timestamp);
+            }
+          } else {
+            msckf_backend->propagate(interval, frame.timestamp);
+          }
+          if (msckf_backend->initialized()) {
+            msckf_backend->augmentClone(frame.timestamp);
+          }
+        } else if (backend) {
+          if (!backend->initialized()) {
+            if (!interval.empty()) {
+              backend->initialize(interval.front());
+              backend->propagate(interval, frame.timestamp);
+            }
+          } else {
             backend->propagate(interval, frame.timestamp);
           }
-        } else {
-          backend->propagate(interval, frame.timestamp);
         }
         backend_has_frame = true;
         backend_previous_frame_time = frame.timestamp;
@@ -960,6 +979,10 @@ int OfflineFeatureRunner::run() {
                                         options_.backend_position_noise);
               }
             }
+          } else if (msckf_backend && msckf_backend->initialized()) {
+            msckf_backend->update(landmark_track_manager->activeTracks(),
+                                  camera_rig);
+            msckf_backend->marginalizeOldestClone();
           }
         }
         const double cross_camera_processing_time =
@@ -972,11 +995,37 @@ int OfflineFeatureRunner::run() {
                      cross_camera_processing_time);
       }
 
-      if (backend && backend_landmarks && backend->initialized()) {
-        output_recorder.record(backend->state(),
-                               backend_landmarks->landmarks());
+      EskfState output_state;
+      Eigen::Matrix<double, 15, 15> output_covariance;
+      if (backend && backend->initialized()) {
+        output_state = backend->state();
+        output_covariance = backend->covariance();
+      } else if (msckf_backend && msckf_backend->initialized()) {
+        output_state.timestamp = msckf_backend->state().timestamp;
+        output_state.q_wb = msckf_backend->state().q_wb;
+        output_state.p_wb = msckf_backend->state().p_wb;
+        output_state.v_wb = msckf_backend->state().v_wb;
+        output_state.bias_gyro = msckf_backend->state().bias_gyro;
+        output_state.bias_accel = msckf_backend->state().bias_accel;
+        output_covariance =
+            msckf_backend->covariance().topLeftCorner<15, 15>();
+
+        if (backend_landmarks && landmark_track_manager) {
+          for (const LandmarkTrack& track :
+               landmark_track_manager->activeTracks()) {
+            Eigen::Vector3d body_point;
+            Eigen::Vector3d world_measurement;
+            bool is_new = false;
+            backend_landmarks->observe(track, output_state, &body_point,
+                                       &world_measurement, &is_new);
+          }
+        }
+      }
+
+      if (backend_landmarks) {
+        output_recorder.record(output_state, backend_landmarks->landmarks());
         if (ros_output) {
-          ros_output->publish(backend->state(), backend->covariance(),
+          ros_output->publish(output_state, output_covariance,
                               backend_landmarks->landmarks());
         }
       }

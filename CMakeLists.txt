@@ -189,6 +189,7 @@ target_link_libraries(sphere_vio_frontend
 add_library(sphere_vio_backend
   src/backend/eskf.cpp
   src/backend/landmark_map.cpp
+  src/backend/msckf.cpp
 )
 target_link_libraries(sphere_vio_backend
   sphere_vio_frontend
@@ -578,5 +579,12 @@ if(CATKIN_ENABLE_TESTING)
   )
   if(TARGET test_eskf)
     target_link_libraries(test_eskf sphere_vio_backend)
+  endif()
+  catkin_add_gtest(test_msckf
+    test/test_main.cpp
+    test/test_msckf.cpp
+  )
+  if(TARGET test_msckf)
+    target_link_libraries(test_msckf sphere_vio_backend sphere_vio_camera)
   endif()
 endif()

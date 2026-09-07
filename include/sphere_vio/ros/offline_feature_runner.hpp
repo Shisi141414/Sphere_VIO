@@ -3,6 +3,7 @@
 #include <string>
 
 #include "sphere_vio/backend/eskf.hpp"
+#include "sphere_vio/backend/msckf.hpp"
 #include "sphere_vio/frontend/cross_camera_matcher.hpp"
 #include "sphere_vio/frontend/landmark_track_manager.hpp"
 #include "sphere_vio/frontend/temporal_frontend.hpp"
@@ -25,6 +26,8 @@ struct OfflineFeatureRunnerOptions {
   std::string camera_config_file;
   bool enable_backend = false;
   EskfOptions backend;
+  bool enable_msckf = false;
+  MsckfOptions msckf;
   double backend_position_noise = 0.20;
   std::string output_directory;
   bool publish_ros = false;

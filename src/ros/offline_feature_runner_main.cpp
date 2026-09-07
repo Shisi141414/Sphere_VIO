@@ -26,6 +26,7 @@ struct CommandLineOptions {
   bool triangulation_threshold_sweep = false;
   bool landmark_tracks = false;
   bool enable_backend = false;
+  bool enable_msckf = false;
   double backend_position_noise = 0.20;
   std::string output_directory;
   bool publish_ros = false;
@@ -44,6 +45,7 @@ void printUsage() {
          "  --triangulation-threshold-sweep  Add single-variable gate scans\n"
          "  --landmark-tracks  Enable observation-association hypotheses\n"
          "  --esfk  Enable ESKF/IMU backend and publish/record outputs\n"
+         "  --msckf  Enable sliding-window MSCKF backend\n"
          "  --backend-position-noise VALUE  Landmark position update sigma\n"
          "  --output-dir DIR  Save odometry.csv and landmarks.csv\n"
          "  --publish-ros  Publish odometry/path/TF/landmarks\n"
@@ -96,6 +98,14 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       continue;
     }
     if (argument == "--esfk") {
+      options->enable_backend = true;
+      options->landmark_tracks = true;
+      options->triangulation_candidates = true;
+      options->cross_camera_matching = true;
+      continue;
+    }
+    if (argument == "--msckf") {
+      options->enable_msckf = true;
       options->enable_backend = true;
       options->landmark_tracks = true;
       options->triangulation_candidates = true;
@@ -195,6 +205,7 @@ int main(int argc, char** argv) {
       command_line.triangulation_threshold_sweep;
   options.landmark_tracks = command_line.landmark_tracks;
   options.enable_backend = command_line.enable_backend;
+  options.enable_msckf = command_line.enable_msckf;
   options.backend_position_noise = command_line.backend_position_noise;
   options.output_directory = command_line.output_directory;
   options.publish_ros = command_line.publish_ros;
