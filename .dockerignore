@@ -1,0 +1,12 @@
+.git
+.gitignore
+build
+devel
+data
+output
+*.bag
+*.active
+*.db3
+*.mcap
+__pycache__
+*.pyc

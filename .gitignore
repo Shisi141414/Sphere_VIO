@@ -52,6 +52,7 @@ gmon.out
 # remain outside this phase's source changes.
 docs/*
 !docs/SPHERE_VIO_IMPLEMENTATION_GUIDE.md
+!docs/USAGE_ZH.md
 
 # Temporary files
 *.log
