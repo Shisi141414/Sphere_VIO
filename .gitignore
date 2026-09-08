@@ -55,6 +55,7 @@ docs/*
 !docs/USAGE_ZH.md
 !docs/BACKEND_ESKF_ZH.md
 !docs/MSCKF_ZH.md
+!docs/D2SLAM_DATASET_ZH.md
 
 # Temporary files
 *.log

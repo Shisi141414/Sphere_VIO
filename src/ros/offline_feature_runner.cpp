@@ -753,6 +753,23 @@ int OfflineFeatureRunner::run() {
   }
   ImuIntervalBuffer backend_imu_buffer(
       options_.bag.maximum_imu_time_difference);
+  bool backend_imu_preloaded = false;
+  if (backend || msckf_backend) {
+    rosbag::View imu_view(
+        bag, rosbag::TopicQuery(std::vector<std::string>{
+                 options_.bag.imu_topic}),
+        processing_start, processing_end);
+    for (const rosbag::MessageInstance& instance : imu_view) {
+      const sensor_msgs::ImuConstPtr message =
+          instance.instantiate<sensor_msgs::Imu>();
+      if (!message) continue;
+      ImuMeasurement measurement;
+      if (convertImuMessage(*message, &measurement)) {
+        backend_imu_buffer.add(measurement);
+      }
+    }
+    backend_imu_preloaded = true;
+  }
   bool backend_has_frame = false;
   Timestamp backend_previous_frame_time = 0.0;
   std::array<CameraRunStatistics, 4> run_statistics;
@@ -774,7 +791,8 @@ int OfflineFeatureRunner::run() {
   double maximum_cross_camera_processing_time = 0.0;
 
   for (const rosbag::MessageInstance& instance : view) {
-    if (topicMatches(instance.getTopic(), options_.bag.imu_topic)) {
+    if (!backend_imu_preloaded &&
+        topicMatches(instance.getTopic(), options_.bag.imu_topic)) {
       const sensor_msgs::ImuConstPtr message =
           instance.instantiate<sensor_msgs::Imu>();
       if (message) {
