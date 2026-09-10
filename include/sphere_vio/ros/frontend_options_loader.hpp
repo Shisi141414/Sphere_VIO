@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "sphere_vio/backend/msckf.hpp"
 #include "sphere_vio/frontend/cross_camera_matcher.hpp"
 #include "sphere_vio/frontend/landmark_track_manager.hpp"
 #include "sphere_vio/frontend/temporal_frontend.hpp"
@@ -27,5 +28,8 @@ bool loadLandmarkTrackManagerOptions(
     const std::string& config_file,
     LandmarkTrackManagerOptions* landmark_options,
     std::string* error);
+
+bool loadMsckfOptions(const std::string& config_file,
+                      MsckfOptions* msckf_options, std::string* error);
 
 }  // namespace sphere_vio

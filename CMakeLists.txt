@@ -196,6 +196,7 @@ target_link_libraries(sphere_vio_backend
 )
 
 add_library(sphere_vio_ros
+  src/ros/d2slam_stitched.cpp
   src/ros/frame_assembler.cpp
   src/ros/frontend_options_loader.cpp
   src/ros/offline_bag_runner.cpp
@@ -586,5 +587,17 @@ if(CATKIN_ENABLE_TESTING)
   )
   if(TARGET test_msckf)
     target_link_libraries(test_msckf sphere_vio_backend sphere_vio_camera)
+  endif()
+  catkin_add_gtest(test_d2slam_stitched
+    test/test_main.cpp
+    test/test_d2slam_stitched.cpp
+  )
+  if(TARGET test_d2slam_stitched)
+    target_link_libraries(test_d2slam_stitched
+      sphere_vio_ros
+      ${catkin_LIBRARIES}
+      opencv_core
+      opencv_imgcodecs
+    )
   endif()
 endif()

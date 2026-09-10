@@ -21,8 +21,10 @@ bool OutputRecorder::open(const std::string& directory) {
   if (directory.empty() || !ensureDirectory(directory)) return false;
 
   odometry_file_.open(directory + "/odometry.csv");
+  trajectory_file_.open(directory + "/trajectory.csv");
   landmarks_file_.open(directory + "/landmarks.csv");
-  if (!odometry_file_.is_open() || !landmarks_file_.is_open()) {
+  if (!odometry_file_.is_open() || !trajectory_file_.is_open() ||
+      !landmarks_file_.is_open()) {
     close();
     return false;
   }
@@ -30,6 +32,7 @@ bool OutputRecorder::open(const std::string& directory) {
   odometry_file_ << "timestamp,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,"
                     "bias_gyro_x,bias_gyro_y,bias_gyro_z,"
                     "bias_accel_x,bias_accel_y,bias_accel_z\n";
+  trajectory_file_ << "timestamp,x,y,z,qx,qy,qz,qw\n";
   landmarks_file_ << "landmark_id,x,y,z\n";
   return true;
 }
@@ -51,6 +54,15 @@ void OutputRecorder::record(
                  << state.bias_accel.x() << ',' << state.bias_accel.y() << ','
                  << state.bias_accel.z() << '\n';
 
+  if (trajectory_file_.is_open()) {
+    trajectory_file_ << std::fixed << std::setprecision(9)
+                     << state.timestamp << ','
+                     << state.p_wb.x() << ',' << state.p_wb.y() << ','
+                     << state.p_wb.z() << ','
+                     << state.q_wb.x() << ',' << state.q_wb.y() << ','
+                     << state.q_wb.z() << ',' << state.q_wb.w() << '\n';
+  }
+
   if (landmarks_file_.is_open()) {
     for (const BackendLandmark& landmark : landmarks) {
       landmarks_file_ << std::fixed << std::setprecision(9)
@@ -63,6 +75,7 @@ void OutputRecorder::record(
 
 void OutputRecorder::close() {
   if (odometry_file_.is_open()) odometry_file_.close();
+  if (trajectory_file_.is_open()) trajectory_file_.close();
   if (landmarks_file_.is_open()) landmarks_file_.close();
 }
 

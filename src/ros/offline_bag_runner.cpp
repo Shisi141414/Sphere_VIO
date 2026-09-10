@@ -65,6 +65,10 @@ bool loadOfflineBagConfiguration(const std::string& config_file,
     readIfPresent(root["topics"], "camera2", &configuration->camera_topics[2]);
     readIfPresent(root["topics"], "camera3", &configuration->camera_topics[3]);
     readIfPresent(root["topics"], "imu", &configuration->imu_topic);
+    readIfPresent(root["topics"], "d2slam_stitched_image",
+                  &configuration->d2slam_stitched_image_topic);
+    readIfPresent(root["topics"], "d2slam_imu",
+                  &configuration->d2slam_imu_topic);
     readIfPresent(root["synchronization"], "maximum_image_time_difference",
                   &configuration->maximum_image_time_difference);
     readIfPresent(root["synchronization"], "require_exact_image_timestamps",

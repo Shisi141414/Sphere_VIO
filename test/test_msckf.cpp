@@ -40,9 +40,28 @@ TEST(MsckfTest, PropagatesAugmentsAndMarginalizesClones) {
 TEST(MsckfTest, EmptyFeatureUpdateIsSafe) {
   Msckf msckf;
   ASSERT_TRUE(msckf.initialize(makeImu(0.0)));
-  std::vector<sphere_vio::LandmarkTrack> tracks;
+  std::vector<sphere_vio::MsckfFeature> features;
   sphere_vio::CameraRig rig;
-  EXPECT_FALSE(msckf.update(tracks, rig));
+  EXPECT_FALSE(msckf.update(features, rig));
+}
+
+TEST(MsckfFeatureAccumulatorTest, RecordsAndPrunesObservations) {
+  sphere_vio::MsckfFeatureAccumulator accumulator(2U);
+  accumulator.add(0U, 10U, 1.0, Eigen::Vector2d(1.0, 2.0), 1U);
+  accumulator.add(0U, 10U, 1.1, Eigen::Vector2d(1.1, 2.1), 2U);
+  accumulator.add(0U, 10U, 1.2, Eigen::Vector2d(1.2, 2.2), 3U);
+  accumulator.add(1U, 11U, 1.0, Eigen::Vector2d(3.0, 4.0), 1U);
+
+  const std::vector<sphere_vio::MsckfObservation>* observations =
+      accumulator.observations(0U, 10U);
+  ASSERT_NE(observations, nullptr);
+  EXPECT_EQ(observations->size(), 2U);
+  EXPECT_DOUBLE_EQ(observations->front().timestamp, 1.1);
+  EXPECT_DOUBLE_EQ(observations->back().timestamp, 1.2);
+
+  accumulator.prune(5U, 2U);
+  EXPECT_EQ(accumulator.observations(1U, 11U), nullptr);
+  EXPECT_EQ(accumulator.keys().size(), 1U);
 }
 
 }  // namespace

@@ -7,6 +7,8 @@ topics:
   camera2: /fisheye/bleft/image_raw
   camera3: /fisheye/bright/image_raw
   imu: /imu_data_raw
+  d2slam_stitched_image: /arducam/image/compressed
+  d2slam_imu: /dji_sdk_1/dji_sdk/imu
 
 synchronization:
   maximum_image_time_difference: 0.001

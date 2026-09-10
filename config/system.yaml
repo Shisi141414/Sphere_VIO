@@ -46,8 +46,6 @@ frontend:
   cross_camera:
     camera_pairs:
       - [0, 1]
-      - [0, 2]
-      - [1, 3]
       - [2, 3]
 
     orb_patch_size: 31
@@ -105,3 +103,32 @@ panorama:
     # Project diagnostic choice, not the paper's official seam/blending rule.
     # The current owner-selected composite performs no blending.
     owner_policy: maximum_camera_forward_component
+
+backend:
+  msckf:
+    gravity_magnitude: 9.805
+    gyroscope_noise: 1.0e-2
+    accelerometer_noise: 1.0e-1
+    gyroscope_bias_noise: 1.0e-4
+    accelerometer_bias_noise: 1.0e-3
+    pixel_noise: 1.5
+    feature_chi_square_probability: 0.95
+    maximum_clones: 20
+    maximum_feature_observations: 40
+    maximum_frames_without_observation: 5
+    initial_covariance_diagonal:
+      - 1.0e-4
+      - 1.0e-4
+      - 1.0e-4
+      - 1.0e-2
+      - 1.0e-2
+      - 1.0e-2
+      - 1.0e-2
+      - 1.0e-2
+      - 1.0e-2
+      - 1.0e-4
+      - 1.0e-4
+      - 1.0e-4
+      - 1.0e-4
+      - 1.0e-4
+      - 1.0e-4

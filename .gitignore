@@ -38,6 +38,7 @@ data/
 
 # Editor and operating system
 .vscode/
+!.vscode/extensions.json
 .idea/
 *.swp
 *~

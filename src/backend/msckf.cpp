@@ -1,8 +1,13 @@
 #include "sphere_vio/backend/msckf.hpp"
+#include "sphere_vio/geometry/triangulation.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+
+#include <Eigen/LU>
+#include <Eigen/QR>
 
 namespace sphere_vio {
 namespace {
@@ -38,6 +43,25 @@ bool finiteQuaternion(const Eigen::Quaterniond& quaternion) {
   return quaternion.coeffs().allFinite();
 }
 
+// Wilson-Hilferty approximation for the one-sided chi-square quantile. This
+// avoids a Boost link dependency and is accurate enough for feature gating.
+double chiSquareQuantile(double degrees_of_freedom, double probability) {
+  if (!std::isfinite(degrees_of_freedom) || degrees_of_freedom <= 0.0 ||
+      probability <= 0.0 || probability >= 1.0) {
+    return std::numeric_limits<double>::infinity();
+  }
+  // Normal quantile table is unnecessary for a fixed feature gate: 0.95 and
+  // 0.99 are the only supported probabilities in configuration.
+  const double z =
+      probability >= 0.99 ? 2.3263478740408408 : 1.6448536269514722;
+  const double correction = 2.0 / (9.0 * degrees_of_freedom);
+  const double value =
+      degrees_of_freedom *
+      std::pow(1.0 - correction + z * std::sqrt(correction), 3.0);
+  return std::isfinite(value) ? value
+                              : std::numeric_limits<double>::infinity();
+}
+
 const MsckfClone* findClone(const std::map<Timestamp, MsckfClone>& clones,
                             Timestamp timestamp) {
   const auto exact = clones.find(timestamp);
@@ -57,7 +81,74 @@ const MsckfClone* findClone(const std::map<Timestamp, MsckfClone>& clones,
 
 }  // namespace
 
-Msckf::Msckf(MsckfOptions options) : options_(std::move(options)) {}
+MsckfFeatureAccumulator::MsckfFeatureAccumulator(
+    std::size_t maximum_observations)
+    : maximum_observations_(maximum_observations) {
+  if (maximum_observations_ == 0U) maximum_observations_ = 40U;
+}
+
+void MsckfFeatureAccumulator::add(CameraId camera_id, FeatureId feature_id,
+                                  Timestamp timestamp,
+                                  const Eigen::Vector2d& pixel,
+                                  std::uint64_t frame_index) {
+  if (feature_id == 0U || !std::isfinite(timestamp) ||
+      !pixel.allFinite()) {
+    return;
+  }
+  const TemporalFeatureKey key{camera_id, feature_id};
+  TrackState& state = tracks_[key];
+  state.last_frame_index = frame_index;
+
+  if (!state.observations.empty() &&
+      state.observations.back().timestamp == timestamp) {
+    state.observations.back().pixel = pixel;
+    return;
+  }
+  MsckfObservation observation;
+  observation.timestamp = timestamp;
+  observation.camera_id = camera_id;
+  observation.pixel = pixel;
+  state.observations.push_back(observation);
+  if (state.observations.size() > maximum_observations_) {
+    state.observations.erase(
+        state.observations.begin(),
+        state.observations.begin() +
+            (state.observations.size() - maximum_observations_));
+  }
+}
+
+void MsckfFeatureAccumulator::prune(
+    std::uint64_t current_frame_index,
+    std::uint64_t maximum_frames_without_observation) {
+  for (auto iterator = tracks_.begin(); iterator != tracks_.end();) {
+    if (current_frame_index > iterator->second.last_frame_index &&
+        current_frame_index - iterator->second.last_frame_index >
+            maximum_frames_without_observation) {
+      iterator = tracks_.erase(iterator);
+    } else {
+      ++iterator;
+    }
+  }
+}
+
+const std::vector<MsckfObservation>*
+MsckfFeatureAccumulator::observations(CameraId camera_id,
+                                      FeatureId feature_id) const {
+  const auto found = tracks_.find(TemporalFeatureKey{camera_id, feature_id});
+  return found == tracks_.end() ? nullptr : &found->second.observations;
+}
+
+std::vector<TemporalFeatureKey> MsckfFeatureAccumulator::keys() const {
+  std::vector<TemporalFeatureKey> result;
+  result.reserve(tracks_.size());
+  for (const auto& entry : tracks_) result.push_back(entry.first);
+  return result;
+}
+
+Msckf::Msckf(MsckfOptions options) : options_(std::move(options)) {
+  options_.gravity =
+      Eigen::Vector3d(0.0, 0.0, -options_.gravity_magnitude);
+}
 
 bool Msckf::initialize(const ImuMeasurement& measurement) {
   if (!measurement.acceleration.allFinite() ||
@@ -119,7 +210,7 @@ bool Msckf::augmentClone(Timestamp timestamp) {
   return true;
 }
 
-bool Msckf::update(const std::vector<LandmarkTrack>& tracks,
+bool Msckf::update(const std::vector<MsckfFeature>& features,
                    const CameraRig& camera_rig) {
   if (!initialized_ || clones_.size() < 2U) return false;
 
@@ -127,9 +218,12 @@ bool Msckf::update(const std::vector<LandmarkTrack>& tracks,
   std::vector<Eigen::VectorXd> projected_residual;
   const int state_size = static_cast<int>(covariance_.rows());
 
-  for (const LandmarkTrack& track : tracks) {
+  for (const MsckfFeature& feature : features) {
+    Eigen::Vector3d point_w;
     std::vector<FeatureMeasurement> measurements;
-    if (!buildFeature(track, &measurements) || measurements.size() < 2U) {
+    if (!buildFeatureMeasurements(feature, camera_rig, &point_w,
+                                  &measurements) ||
+        measurements.size() < 2U) {
       continue;
     }
 
@@ -160,7 +254,10 @@ bool Msckf::update(const std::vector<LandmarkTrack>& tracks,
       row += 2;
     }
 
-    if (row < 6) continue;
+    // Two observations are enough for a monocular feature: after removing the
+    // three feature-position degrees of freedom there is one useful residual
+    // row. Requiring three observations would discard most temporal tracks.
+    if (row < 4) continue;
     H_f.conservativeResize(row, 3);
     H_x.conservativeResize(row, state_size);
     residual.conservativeResize(row);
@@ -177,8 +274,34 @@ bool Msckf::update(const std::vector<LandmarkTrack>& tracks,
 
     Eigen::MatrixXd left_nullspace =
         svd.matrixU().block(0, rank, H_f.rows(), H_f.rows() - rank).transpose();
-    projected_H.push_back(left_nullspace * H_x);
-    projected_residual.push_back(left_nullspace * residual);
+    const Eigen::MatrixXd feature_H = left_nullspace * H_x;
+    const Eigen::VectorXd feature_residual = left_nullspace * residual;
+    if (!feature_H.allFinite() || !feature_residual.allFinite()) continue;
+
+    // Per-feature innovation gate rejects stale or outlier temporal tracks
+    // before they can poison the joint update.
+    const int degrees_of_freedom = feature_residual.rows();
+    if (degrees_of_freedom > 0) {
+      const Eigen::MatrixXd feature_innovation =
+          feature_H * covariance_ * feature_H.transpose() +
+          options_.pixel_noise * options_.pixel_noise *
+              Eigen::MatrixXd::Identity(degrees_of_freedom,
+                                        degrees_of_freedom);
+      if (!feature_innovation.allFinite()) continue;
+      const Eigen::VectorXd weighted =
+          feature_innovation.ldlt().solve(feature_residual);
+      const double mahalanobis_squared =
+          feature_residual.dot(weighted);
+      const double threshold = chiSquareQuantile(
+          degrees_of_freedom, options_.feature_chi_square_probability);
+      if (!std::isfinite(mahalanobis_squared) ||
+          mahalanobis_squared > threshold) {
+        continue;
+      }
+    }
+
+    projected_H.push_back(std::move(feature_H));
+    projected_residual.push_back(std::move(feature_residual));
   }
 
   if (projected_H.empty()) return false;
@@ -253,45 +376,141 @@ void Msckf::marginalizeOldestClone() {
   }
 }
 
-bool Msckf::buildFeature(
-    const LandmarkTrack& track,
+bool Msckf::buildFeatureMeasurements(
+    const MsckfFeature& feature, const CameraRig& camera_rig,
+    Eigen::Vector3d* point_w,
     std::vector<FeatureMeasurement>* measurements) const {
-  if (!measurements) return false;
+  if (!point_w || !measurements) return false;
   measurements->clear();
-  if (!track.has_latest_triangulation_diagnostic ||
-      !track.latest_triangulation_diagnostic.admitted ||
-      !track.latest_triangulation_diagnostic.triangulation.valid) {
-    return false;
-  }
+  if (feature.observations.size() < 2U) return false;
 
-  const Eigen::Vector3d point_b =
-      track.latest_triangulation_diagnostic.point_b;
-  if (!point_b.allFinite()) return false;
-
-  // Use the first observation that still has a clone as the anchor pose.
-  const MsckfClone* anchor = nullptr;
-  for (const LandmarkObservation& observation : track.observations) {
-    const MsckfClone* candidate = findClone(clones_, observation.timestamp);
-    if (candidate) {
-      anchor = candidate;
-      break;
-    }
-  }
-  if (!anchor) return false;
-  const Eigen::Vector3d point_w = anchor->q_wb * point_b + anchor->p_wb;
-
-  for (const LandmarkObservation& observation : track.observations) {
+  for (const MsckfObservation& observation : feature.observations) {
     const MsckfClone* clone = findClone(clones_, observation.timestamp);
     if (!clone) continue;
     FeatureMeasurement measurement;
     measurement.timestamp = clone->timestamp;
-    measurement.camera_id = observation.feature.camera_id;
+    measurement.camera_id = observation.camera_id;
     measurement.pixel = observation.pixel;
-    measurement.p_w = point_w;
+    measurement.p_w = Eigen::Vector3d::Zero();
     measurement.clone_index = clone->index;
     measurements->push_back(measurement);
   }
-  return measurements->size() >= 2U;
+  if (measurements->size() < 2U) return false;
+
+  if (!estimateFeaturePosition(*measurements, camera_rig, point_w)) {
+    return false;
+  }
+  for (FeatureMeasurement& measurement : *measurements) {
+    measurement.p_w = *point_w;
+  }
+  return true;
+}
+
+bool Msckf::estimateFeaturePosition(
+    const std::vector<FeatureMeasurement>& measurements,
+    const CameraRig& camera_rig, Eigen::Vector3d* point_w) const {
+  if (!point_w || measurements.size() < 2U) return false;
+
+  const MsckfClone* anchor = findClone(clones_, measurements.front().timestamp);
+  const MsckfClone* far =
+      findClone(clones_, measurements.back().timestamp);
+  if (!anchor || !far || anchor->timestamp == far->timestamp) return false;
+
+  Eigen::Vector3d anchor_bearing_w = Eigen::Vector3d::Zero();
+  Eigen::Vector3d anchor_origin_w = Eigen::Vector3d::Zero();
+  Eigen::Vector3d far_bearing_w = Eigen::Vector3d::Zero();
+  Eigen::Vector3d far_origin_w = Eigen::Vector3d::Zero();
+
+  const auto bearingInWorld =
+      [&camera_rig](const FeatureMeasurement& measurement,
+                    const MsckfClone& clone, Eigen::Vector3d* bearing,
+                    Eigen::Vector3d* origin) {
+        const RigCamera* camera = camera_rig.camera(measurement.camera_id);
+        if (!camera || !camera->model) return false;
+        Eigen::Vector3d bearing_c;
+        if (!camera->model->unproject(measurement.pixel, &bearing_c)) {
+          return false;
+        }
+        const Eigen::Vector3d bearing_b = camera->R_b_c * bearing_c;
+        *bearing = clone.q_wb * bearing_b;
+        *origin = clone.p_wb + clone.q_wb * camera->t_b_c;
+        return bearing->allFinite() && origin->allFinite();
+      };
+
+  if (!bearingInWorld(measurements.front(), *anchor, &anchor_bearing_w,
+                      &anchor_origin_w) ||
+      !bearingInWorld(measurements.back(), *far, &far_bearing_w,
+                      &far_origin_w)) {
+    return false;
+  }
+
+  TriangulationOptions options;
+  options.minimum_baseline = 1e-4;
+  options.minimum_ray_angle = 5e-4;
+  options.minimum_depth = 0.1;
+  options.maximum_closest_ray_distance =
+      std::numeric_limits<double>::infinity();
+  options.maximum_angular_reprojection_error =
+      std::numeric_limits<double>::infinity();
+
+  TriangulationResult triangulation;
+  Eigen::Vector3d estimate;
+  if (triangulateRays(anchor_origin_w, anchor_bearing_w, far_origin_w,
+                      far_bearing_w, options, &triangulation)) {
+    estimate = triangulation.point_common;
+  } else {
+    // Fallback for nearly parallel rays or degenerate motion: initialize on
+    // the anchor ray and let Gauss-Newton correct the depth.
+    estimate = anchor_origin_w + 8.0 * anchor_bearing_w;
+  }
+  if (!estimate.allFinite() || estimate.norm() > 500.0) return false;
+
+  for (int iteration = 0; iteration < 5; ++iteration) {
+    const int rows = 2 * static_cast<int>(measurements.size());
+    Eigen::MatrixXd jacobian = Eigen::MatrixXd::Zero(rows, 3);
+    Eigen::VectorXd residual = Eigen::VectorXd::Zero(rows);
+    int row = 0;
+    bool projected_all = true;
+
+    for (const FeatureMeasurement& measurement : measurements) {
+      const auto clone_it = clones_.find(measurement.timestamp);
+      if (clone_it == clones_.end()) {
+        projected_all = false;
+        break;
+      }
+      FeatureMeasurement working = measurement;
+      working.p_w = estimate;
+      Eigen::Vector2d predicted;
+      Eigen::Matrix<double, 2, 3> jacobian_feature;
+      Eigen::Matrix<double, 2, 6> jacobian_clone;
+      if (!computeProjectionAndJacobians(
+              camera_rig, clone_it->second, working, &predicted,
+              &jacobian_feature, &jacobian_clone)) {
+        projected_all = false;
+        break;
+      }
+      residual.segment<2>(row) = measurement.pixel - predicted;
+      jacobian.block<2, 3>(row, 0) = jacobian_feature;
+      row += 2;
+    }
+    if (!projected_all || row == 0) break;
+
+    jacobian.conservativeResize(row, 3);
+    residual.conservativeResize(row);
+
+    const Eigen::Matrix3d normal = jacobian.transpose() * jacobian;
+    double damping = 1e-3 * std::max(1.0, normal.diagonal().maxCoeff());
+    const Eigen::Matrix3d system =
+        normal + damping * Eigen::Matrix3d::Identity();
+    const Eigen::Vector3d gradient = jacobian.transpose() * residual;
+    const Eigen::Vector3d step = system.ldlt().solve(gradient);
+    if (!step.allFinite()) break;
+    estimate -= step;
+    if (!estimate.allFinite() || estimate.norm() > 500.0) break;
+  }
+
+  *point_w = estimate;
+  return estimate.allFinite() && estimate.norm() <= 500.0;
 }
 
 void Msckf::propagateSegment(const ImuMeasurement& minus,

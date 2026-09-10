@@ -20,6 +20,7 @@ class OutputRecorder {
 
  private:
   std::ofstream odometry_file_;
+  std::ofstream trajectory_file_;
   std::ofstream landmarks_file_;
 };
 

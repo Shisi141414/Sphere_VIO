@@ -28,6 +28,14 @@ struct CommandLineOptions {
   bool enable_backend = false;
   bool enable_msckf = false;
   double backend_position_noise = 0.20;
+  double msckf_pixel_noise = 0.0;
+  double msckf_chi_square_probability = 0.0;
+  double gravity_magnitude = 0.0;
+  int msckf_max_clones = 0;
+  bool has_msckf_pixel_noise = false;
+  bool has_msckf_chi_square_probability = false;
+  bool has_gravity_magnitude = false;
+  bool has_msckf_max_clones = false;
   std::string output_directory;
   bool publish_ros = false;
 };
@@ -47,6 +55,10 @@ void printUsage() {
          "  --esfk  Enable ESKF/IMU backend and publish/record outputs\n"
          "  --msckf  Enable sliding-window MSCKF backend\n"
          "  --backend-position-noise VALUE  Landmark position update sigma\n"
+         "  --msckf-pixel-noise VALUE  MSCKF pixel measurement sigma\n"
+         "  --msckf-max-clones VALUE  MSCKF sliding-window clone count\n"
+         "  --msckf-chi-square-probability VALUE  Feature gate probability\n"
+         "  --gravity-magnitude VALUE  Gravity norm used by the IMU model\n"
          "  --output-dir DIR  Save odometry.csv and landmarks.csv\n"
          "  --publish-ros  Publish odometry/path/TF/landmarks\n"
          "  --help                 Show this message"
@@ -137,6 +149,26 @@ bool parseCommandLine(int argc, char** argv, CommandLineOptions* options,
       options->has_duration = true;
     } else if (argument == "--backend-position-noise") {
       if (!parseDouble(value, &options->backend_position_noise)) return false;
+    } else if (argument == "--msckf-pixel-noise") {
+      if (!parseDouble(value, &options->msckf_pixel_noise)) return false;
+      options->has_msckf_pixel_noise = true;
+    } else if (argument == "--msckf-chi-square-probability") {
+      if (!parseDouble(value, &options->msckf_chi_square_probability)) {
+        return false;
+      }
+      options->has_msckf_chi_square_probability = true;
+    } else if (argument == "--gravity-magnitude") {
+      if (!parseDouble(value, &options->gravity_magnitude)) return false;
+      options->has_gravity_magnitude = true;
+    } else if (argument == "--msckf-max-clones") {
+      try {
+        std::size_t consumed = 0U;
+        options->msckf_max_clones = std::stoi(value, &consumed);
+        if (consumed != value.size()) return false;
+      } catch (const std::exception&) {
+        return false;
+      }
+      options->has_msckf_max_clones = true;
     } else if (argument == "--output-dir") {
       options->output_directory = value;
     } else {
@@ -228,6 +260,27 @@ int main(int argc, char** argv) {
     std::cerr << "Invalid landmark track configuration: " << error
               << std::endl;
     return EXIT_FAILURE;
+  }
+  if (options.enable_msckf &&
+      !sphere_vio::loadMsckfOptions(frontend_config, &options.msckf,
+                                    &error)) {
+    std::cerr << "Invalid MSCKF configuration: " << error << std::endl;
+    return EXIT_FAILURE;
+  }
+  if (command_line.has_msckf_pixel_noise) {
+    options.msckf.pixel_noise = command_line.msckf_pixel_noise;
+  }
+  if (command_line.has_msckf_chi_square_probability) {
+    options.msckf.feature_chi_square_probability =
+        command_line.msckf_chi_square_probability;
+  }
+  if (command_line.has_gravity_magnitude) {
+    options.msckf.gravity_magnitude = command_line.gravity_magnitude;
+    options.msckf.gravity =
+        Eigen::Vector3d(0.0, 0.0, -command_line.gravity_magnitude);
+  }
+  if (command_line.has_msckf_max_clones) {
+    options.msckf.maximum_clones = command_line.msckf_max_clones;
   }
   options.camera_config_file =
       command_line.camera_config_file.empty()

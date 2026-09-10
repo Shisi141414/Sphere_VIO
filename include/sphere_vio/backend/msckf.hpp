@@ -14,12 +14,18 @@ namespace sphere_vio {
 
 struct MsckfOptions {
   Eigen::Vector3d gravity = Eigen::Vector3d(0.0, 0.0, -9.81);
+  // Scalar gravity magnitude mirrors `gravity`; configuration files use this
+  // value and the loader writes it into gravity.z().
+  double gravity_magnitude = 9.81;
   double gyroscope_noise = 1.0e-2;
   double accelerometer_noise = 1.0e-1;
   double gyroscope_bias_noise = 1.0e-4;
   double accelerometer_bias_noise = 1.0e-3;
   double pixel_noise = 1.5;
+  double feature_chi_square_probability = 0.95;
   int maximum_clones = 20;
+  std::size_t maximum_feature_observations = 40U;
+  std::uint64_t maximum_frames_without_observation = 5U;
   Eigen::Matrix<double, 15, 15> initial_covariance =
       Eigen::Matrix<double, 15, 15>::Identity();
 };
@@ -40,6 +46,43 @@ struct MsckfClone {
   int index = 0;
 };
 
+struct MsckfObservation {
+  Timestamp timestamp = 0.0;
+  CameraId camera_id = 0U;
+  Eigen::Vector2d pixel = Eigen::Vector2d::Zero();
+};
+
+struct MsckfFeature {
+  std::uint64_t id = 0U;
+  std::vector<MsckfObservation> observations;
+};
+
+// Accumulates current-frame pixel observations for every active temporal
+// feature. The runner uses this to feed monocular and multi-camera features to
+// MSCKF instead of relying only on cross-camera stereo LandmarkTracks.
+class MsckfFeatureAccumulator {
+ public:
+  explicit MsckfFeatureAccumulator(
+      std::size_t maximum_observations = 40U);
+
+  void add(CameraId camera_id, FeatureId feature_id, Timestamp timestamp,
+           const Eigen::Vector2d& pixel, std::uint64_t frame_index);
+  void prune(std::uint64_t current_frame_index,
+             std::uint64_t maximum_frames_without_observation);
+  const std::vector<MsckfObservation>* observations(
+      CameraId camera_id, FeatureId feature_id) const;
+  std::vector<TemporalFeatureKey> keys() const;
+
+ private:
+  struct TrackState {
+    std::uint64_t last_frame_index = 0U;
+    std::vector<MsckfObservation> observations;
+  };
+
+  std::size_t maximum_observations_;
+  std::map<TemporalFeatureKey, TrackState> tracks_;
+};
+
 // Sliding-window MSCKF backend. The current IMU state occupies the first 15
 // covariance entries and each clone adds six error-state entries
 // [theta, position].
@@ -56,7 +99,7 @@ class Msckf {
   bool propagate(const std::vector<ImuMeasurement>& measurements,
                  Timestamp end_time);
   bool augmentClone(Timestamp timestamp);
-  bool update(const std::vector<LandmarkTrack>& tracks,
+  bool update(const std::vector<MsckfFeature>& features,
               const CameraRig& camera_rig);
   void marginalizeOldestClone();
 
@@ -69,8 +112,13 @@ class Msckf {
     int clone_index = 0;
   };
 
-  bool buildFeature(const LandmarkTrack& track,
-                    std::vector<FeatureMeasurement>* measurements) const;
+  bool buildFeatureMeasurements(
+      const MsckfFeature& feature, const CameraRig& camera_rig,
+      Eigen::Vector3d* point_w,
+      std::vector<FeatureMeasurement>* measurements) const;
+  bool estimateFeaturePosition(
+      const std::vector<FeatureMeasurement>& measurements,
+      const CameraRig& camera_rig, Eigen::Vector3d* point_w) const;
   void propagateSegment(const ImuMeasurement& minus,
                         const ImuMeasurement& plus);
   bool applyErrorState(const Eigen::VectorXd& correction);

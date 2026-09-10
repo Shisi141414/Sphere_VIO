@@ -1,0 +1,17 @@
+{
+  "name": "Sphere-VIO ROS Noetic",
+  "image": "sphere_vio:noetic",
+  "workspaceFolder": "/root/catkin_ws/src/sphere_vio",
+  "mounts": [
+    "type=bind,source=${localWorkspaceFolder},target=/root/catkin_ws/src/sphere_vio"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "llvm-vs-code-extensions.vscode-clangd",
+        "ms-vscode.cmake-tools"
+      ]
+    }
+  }
+}

@@ -256,4 +256,80 @@ bool loadLandmarkTrackManagerOptions(
   return true;
 }
 
+bool loadMsckfOptions(const std::string& config_file,
+                      MsckfOptions* msckf_options, std::string* error) {
+  if (!msckf_options) return false;
+  try {
+    const YAML::Node root = YAML::LoadFile(config_file);
+    const YAML::Node backend = root["backend"];
+    const YAML::Node msckf = backend ? backend["msckf"]
+                                      : root["msckf"];
+    if (!msckf) {
+      if (error) *error = "missing backend.msckf section";
+      return false;
+    }
+    readIfPresent(msckf, "gravity_magnitude",
+                  &msckf_options->gravity_magnitude);
+    readIfPresent(msckf, "gyroscope_noise",
+                  &msckf_options->gyroscope_noise);
+    readIfPresent(msckf, "accelerometer_noise",
+                  &msckf_options->accelerometer_noise);
+    readIfPresent(msckf, "gyroscope_bias_noise",
+                  &msckf_options->gyroscope_bias_noise);
+    readIfPresent(msckf, "accelerometer_bias_noise",
+                  &msckf_options->accelerometer_bias_noise);
+    readIfPresent(msckf, "pixel_noise", &msckf_options->pixel_noise);
+    readIfPresent(msckf, "feature_chi_square_probability",
+                  &msckf_options->feature_chi_square_probability);
+    readIfPresent(msckf, "maximum_clones",
+                  &msckf_options->maximum_clones);
+    readIfPresent(msckf, "maximum_feature_observations",
+                  &msckf_options->maximum_feature_observations);
+    readIfPresent(msckf, "maximum_frames_without_observation",
+                  &msckf_options->maximum_frames_without_observation);
+
+    const YAML::Node covariance =
+        msckf["initial_covariance_diagonal"];
+    if (covariance && covariance.IsSequence()) {
+      Eigen::Matrix<double, 15, 15> diagonal =
+          Eigen::Matrix<double, 15, 15>::Identity();
+      if (covariance.size() == 15U) {
+        for (std::size_t index = 0U; index < 15U; ++index) {
+          diagonal(index, index) = covariance[index].as<double>();
+        }
+        msckf_options->initial_covariance = diagonal;
+      }
+    }
+
+    msckf_options->gravity =
+        Eigen::Vector3d(0.0, 0.0, -msckf_options->gravity_magnitude);
+  } catch (const YAML::Exception& exception) {
+    if (error) *error = exception.what();
+    return false;
+  }
+
+  if (!std::isfinite(msckf_options->gravity_magnitude) ||
+      msckf_options->gravity_magnitude <= 0.0 ||
+      !std::isfinite(msckf_options->gyroscope_noise) ||
+      msckf_options->gyroscope_noise < 0.0 ||
+      !std::isfinite(msckf_options->accelerometer_noise) ||
+      msckf_options->accelerometer_noise < 0.0 ||
+      !std::isfinite(msckf_options->gyroscope_bias_noise) ||
+      msckf_options->gyroscope_bias_noise < 0.0 ||
+      !std::isfinite(msckf_options->accelerometer_bias_noise) ||
+      msckf_options->accelerometer_bias_noise < 0.0 ||
+      !std::isfinite(msckf_options->pixel_noise) ||
+      msckf_options->pixel_noise <= 0.0 ||
+      !std::isfinite(msckf_options->feature_chi_square_probability) ||
+      msckf_options->feature_chi_square_probability <= 0.0 ||
+      msckf_options->feature_chi_square_probability >= 1.0 ||
+      msckf_options->maximum_clones < 2 ||
+      msckf_options->maximum_feature_observations < 2U ||
+      msckf_options->maximum_frames_without_observation == 0U) {
+    if (error) *error = "backend.msckf parameters are outside valid ranges";
+    return false;
+  }
+  return true;
+}
+
 }  // namespace sphere_vio

@@ -4,11 +4,13 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <tuple>
 #include <string>
 #include <utility>
@@ -16,8 +18,13 @@
 
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
+#include <sensor_msgs/CompressedImage.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/Imu.h>
+
+#include <sys/resource.h>
+
+#include <opencv2/imgcodecs.hpp>
 
 #include "sphere_vio/backend/eskf.hpp"
 #include "sphere_vio/backend/landmark_map.hpp"
@@ -29,6 +36,7 @@
 #include "sphere_vio/frontend/landmark_track_manager.hpp"
 #include "sphere_vio/frontend/triangulation_candidate_evaluator.hpp"
 #include "sphere_vio/ros/frame_assembler.hpp"
+#include "sphere_vio/ros/d2slam_stitched.hpp"
 #include "sphere_vio/ros/output_recorder.hpp"
 #include "sphere_vio/ros/ros_conversions.hpp"
 #include "sphere_vio/ros/ros_output.hpp"
@@ -162,6 +170,65 @@ bool topicMatches(const std::string& recorded_topic,
                   const std::string& configured_topic) {
   return recorded_topic == configured_topic ||
          ("/" + recorded_topic) == configured_topic;
+}
+
+void appendObservations(const std::vector<MsckfObservation>& source,
+                        std::vector<MsckfObservation>* destination) {
+  if (!destination) return;
+  destination->insert(destination->end(), source.begin(), source.end());
+}
+
+void sortObservations(std::vector<MsckfObservation>* observations) {
+  if (!observations) return;
+  std::stable_sort(
+      observations->begin(), observations->end(),
+      [](const MsckfObservation& lhs, const MsckfObservation& rhs) {
+        if (lhs.timestamp != rhs.timestamp)
+          return lhs.timestamp < rhs.timestamp;
+        return lhs.camera_id < rhs.camera_id;
+      });
+}
+
+// Builds the MSCKF feature list from cross-camera LandmarkTracks (merged across
+// cameras) and every remaining per-camera temporal feature.
+std::vector<MsckfFeature> buildMsckfFeatures(
+    const MsckfFeatureAccumulator& accumulator,
+    const LandmarkTrackManager& landmark_manager,
+    std::uint64_t* next_feature_id) {
+  std::vector<MsckfFeature> features;
+  std::set<TemporalFeatureKey> merged_keys;
+  if (!next_feature_id) return features;
+
+  for (const LandmarkTrack& track : landmark_manager.activeTracks()) {
+    if (track.state == LandmarkTrackState::kRetired) continue;
+    MsckfFeature feature;
+    feature.id = (*next_feature_id)++;
+    for (const auto& member : track.member_features) {
+      const std::vector<MsckfObservation>* observations =
+          accumulator.observations(member.second.camera_id,
+                                   member.second.feature_id);
+      if (!observations) continue;
+      appendObservations(*observations, &feature.observations);
+      merged_keys.insert(member.second);
+    }
+    sortObservations(&feature.observations);
+    if (feature.observations.size() >= 2U) {
+      features.push_back(std::move(feature));
+    }
+  }
+
+  for (const TemporalFeatureKey& key : accumulator.keys()) {
+    if (merged_keys.count(key) != 0U) continue;
+    const std::vector<MsckfObservation>* observations =
+        accumulator.observations(key.camera_id, key.feature_id);
+    if (!observations || observations->size() < 2U) continue;
+    MsckfFeature feature;
+    feature.id = (*next_feature_id)++;
+    feature.observations = *observations;
+    sortObservations(&feature.observations);
+    features.push_back(std::move(feature));
+  }
+  return features;
 }
 
 void addResult(const CameraTrackingResult& result,
@@ -664,6 +731,10 @@ OfflineFeatureRunner::OfflineFeatureRunner(OfflineFeatureRunnerOptions options)
     : options_(std::move(options)) {}
 
 int OfflineFeatureRunner::run() {
+  const auto wall_start = std::chrono::steady_clock::now();
+  struct rusage usage_before {};
+  getrusage(RUSAGE_SELF, &usage_before);
+
   CameraRig camera_rig;
   std::string error;
   if (!loadCameraRigFromYaml(options_.camera_config_file, &camera_rig,
@@ -680,11 +751,21 @@ int OfflineFeatureRunner::run() {
     return 3;
   }
 
+  const bool use_d2slam_stitched =
+      rosbag::View(
+          bag, rosbag::TopicQuery(std::vector<std::string>{
+                   options_.bag.d2slam_stitched_image_topic}))
+          .size() > 0U;
+  const std::string effective_imu_topic =
+      use_d2slam_stitched ? options_.bag.d2slam_imu_topic
+                          : options_.bag.imu_topic;
+
   std::vector<std::string> topics(options_.bag.camera_topics.begin(),
                                   options_.bag.camera_topics.end());
   // Include IMU only to preserve the offline runner's bag-relative time range.
   // The Phase 4A frontend neither consumes nor integrates these measurements.
-  topics.push_back(options_.bag.imu_topic);
+  topics.push_back(effective_imu_topic);
+  topics.push_back(options_.bag.d2slam_stitched_image_topic);
   rosbag::View complete_view(bag, rosbag::TopicQuery(topics));
   if (complete_view.size() == 0U) {
     std::cerr << "The bag contains no configured camera messages."
@@ -734,6 +815,10 @@ int OfflineFeatureRunner::run() {
   std::unique_ptr<BackendLandmarkMap> backend_landmarks;
   std::unique_ptr<RosOutput> ros_output;
   OutputRecorder output_recorder;
+  MsckfFeatureAccumulator msckf_feature_accumulator(
+      options_.msckf.maximum_feature_observations);
+  std::uint64_t msckf_next_feature_id = 1U;
+  std::uint64_t input_frame_count = 0U;
   if (options_.enable_msckf) {
     msckf_backend.reset(new Msckf(options_.msckf));
     backend_landmarks.reset(new BackendLandmarkMap());
@@ -757,7 +842,7 @@ int OfflineFeatureRunner::run() {
   if (backend || msckf_backend) {
     rosbag::View imu_view(
         bag, rosbag::TopicQuery(std::vector<std::string>{
-                 options_.bag.imu_topic}),
+                 effective_imu_topic}),
         processing_start, processing_end);
     for (const rosbag::MessageInstance& instance : imu_view) {
       const sensor_msgs::ImuConstPtr message =
@@ -787,12 +872,14 @@ int OfflineFeatureRunner::run() {
         options_.matcher.camera_pairs.size());
   }
   std::uint64_t completed_frames = 0U;
+  Timestamp first_frame_timestamp = 0.0;
+  Timestamp last_frame_timestamp = 0.0;
   double cross_camera_processing_time_sum = 0.0;
   double maximum_cross_camera_processing_time = 0.0;
 
   for (const rosbag::MessageInstance& instance : view) {
     if (!backend_imu_preloaded &&
-        topicMatches(instance.getTopic(), options_.bag.imu_topic)) {
+        topicMatches(instance.getTopic(), effective_imu_topic)) {
       const sensor_msgs::ImuConstPtr message =
           instance.instantiate<sensor_msgs::Imu>();
       if (message) {
@@ -803,17 +890,40 @@ int OfflineFeatureRunner::run() {
       }
       continue;
     }
-    for (CameraId camera_id = 0U; camera_id < FrameAssembler::kCameraCount;
-         ++camera_id) {
-      if (!topicMatches(instance.getTopic(),
-                        options_.bag.camera_topics[camera_id])) {
+    std::vector<std::pair<CameraId, sensor_msgs::ImageConstPtr>>
+        images_to_add;
+    if (topicMatches(instance.getTopic(),
+                     options_.bag.d2slam_stitched_image_topic)) {
+      const sensor_msgs::CompressedImageConstPtr compressed =
+          instance.instantiate<sensor_msgs::CompressedImage>();
+      if (!compressed) continue;
+      std::array<sensor_msgs::ImagePtr, 4> split_images;
+      if (!splitD2SlamStitchedImage(*compressed, &split_images)) continue;
+      ++input_frame_count;
+      for (CameraId camera_id = 0U; camera_id < FrameAssembler::kCameraCount;
+           ++camera_id) {
+        images_to_add.emplace_back(camera_id, split_images[camera_id]);
+      }
+    } else {
+      for (CameraId camera_id = 0U; camera_id < FrameAssembler::kCameraCount;
+           ++camera_id) {
+        if (!topicMatches(instance.getTopic(),
+                          options_.bag.camera_topics[camera_id])) {
+          continue;
+        }
+        const sensor_msgs::ImageConstPtr message =
+            instance.instantiate<sensor_msgs::Image>();
+        if (!message) continue;
+        images_to_add.emplace_back(camera_id, message);
+        break;
+      }
+    }
+
+    for (const auto& image_entry : images_to_add) {
+      MultiCameraFrame frame;
+      if (!assembler.addImage(image_entry.first, image_entry.second, &frame)) {
         continue;
       }
-      const sensor_msgs::ImageConstPtr message =
-          instance.instantiate<sensor_msgs::Image>();
-      if (!message) break;
-      MultiCameraFrame frame;
-      if (!assembler.addImage(camera_id, message, &frame)) break;
 
       MultiCameraTrackingResult tracking_result;
       if (!frontend.processFrame(frame, camera_rig, &tracking_result)) {
@@ -825,6 +935,8 @@ int OfflineFeatureRunner::run() {
         return 6;
       }
       ++completed_frames;
+      if (completed_frames == 1U) first_frame_timestamp = frame.timestamp;
+      last_frame_timestamp = frame.timestamp;
 
       if (backend || msckf_backend) {
         const std::vector<ImuMeasurement> interval =
@@ -859,6 +971,19 @@ int OfflineFeatureRunner::run() {
 
       for (CameraId id = 0U; id < 4U; ++id)
         addResult(tracking_result.cameras[id], &run_statistics[id]);
+
+      if (msckf_backend) {
+        for (const CameraTrackingResult& camera : tracking_result.cameras) {
+          for (const FeatureTrack& track : camera.tracks) {
+            msckf_feature_accumulator.add(
+                track.camera_id, track.id, track.current.timestamp,
+                track.current.pixel, completed_frames);
+          }
+        }
+        msckf_feature_accumulator.prune(
+            completed_frames,
+            options_.msckf.maximum_frames_without_observation);
+      }
 
       std::vector<CrossCameraPairResult> cross_camera_results;
       std::vector<TriangulationCandidatePairResult> candidate_results;
@@ -997,9 +1122,12 @@ int OfflineFeatureRunner::run() {
                                         options_.backend_position_noise);
               }
             }
-          } else if (msckf_backend && msckf_backend->initialized()) {
-            msckf_backend->update(landmark_track_manager->activeTracks(),
-                                  camera_rig);
+          } else if (msckf_backend && msckf_backend->initialized() &&
+                     landmark_track_manager) {
+            std::vector<MsckfFeature> msckf_features = buildMsckfFeatures(
+                msckf_feature_accumulator, *landmark_track_manager,
+                &msckf_next_feature_id);
+            msckf_backend->update(msckf_features, camera_rig);
             msckf_backend->marginalizeOldestClone();
           }
         }
@@ -1238,6 +1366,53 @@ int OfflineFeatureRunner::run() {
                            completed_frames);
     }
   }
+
+  input_frame_count = assembler.statistics().received_images /
+                      FrameAssembler::kCameraCount;
+  struct rusage usage_after {};
+  getrusage(RUSAGE_SELF, &usage_after);
+  const double cpu_seconds =
+      static_cast<double>(usage_after.ru_utime.tv_sec +
+                          usage_after.ru_stime.tv_sec -
+                          usage_before.ru_utime.tv_sec -
+                          usage_before.ru_stime.tv_sec) +
+      static_cast<double>(usage_after.ru_utime.tv_usec +
+                          usage_after.ru_stime.tv_usec -
+                          usage_before.ru_utime.tv_usec -
+                          usage_before.ru_stime.tv_usec) /
+          1e6;
+  const double wall_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                    wall_start)
+          .count();
+  const double data_duration =
+      completed_frames > 0U ? last_frame_timestamp - first_frame_timestamp
+                            : 0.0;
+  const double rtf =
+      wall_seconds > 0.0 ? data_duration / wall_seconds : 0.0;
+  const double average_frame_time_ms =
+      completed_frames > 0U ? 1000.0 * wall_seconds / completed_frames : 0.0;
+  const double cpu_core_hours_per_frame =
+      completed_frames > 0U
+          ? cpu_seconds / 3600.0 / static_cast<double>(completed_frames)
+          : 0.0;
+  const std::uint64_t dropped_frames =
+      input_frame_count > completed_frames
+          ? input_frame_count - completed_frames
+          : 0U;
+  std::cout << std::fixed << std::setprecision(6)
+            << "\nSphere-VIO performance summary"
+            << "\n  completed frames: " << completed_frames
+            << "\n  input frames: " << input_frame_count
+            << "\n  data duration: " << data_duration << " s"
+            << "\n  wall time: " << wall_seconds << " s"
+            << "\n  RTF: " << rtf
+            << "\n  avg_frame_time_ms: " << average_frame_time_ms
+            << "\n  frame_step: 1"
+            << "\n  dropped_frames: " << dropped_frames
+            << "\n  cpu_core_hours_per_frame: " << cpu_core_hours_per_frame
+            << std::endl;
+
   output_recorder.close();
   return completed_frames == 0U ? 7 : 0;
 }
