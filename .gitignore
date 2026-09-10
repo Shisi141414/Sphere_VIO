@@ -32,7 +32,7 @@ venv/
 
 # Runtime output
 output/
-results/
+# results/
 logs/
 data/
 
@@ -51,12 +51,12 @@ gmon.out
 
 # Keep the implementation guide versioned; other local reference documents
 # remain outside this phase's source changes.
-docs/*
-!docs/SPHERE_VIO_IMPLEMENTATION_GUIDE.md
-!docs/USAGE_ZH.md
-!docs/BACKEND_ESKF_ZH.md
-!docs/MSCKF_ZH.md
-!docs/D2SLAM_DATASET_ZH.md
+# docs/*
+# !docs/SPHERE_VIO_IMPLEMENTATION_GUIDE.md
+# !docs/USAGE_ZH.md
+# !docs/BACKEND_ESKF_ZH.md
+# !docs/MSCKF_ZH.md
+# !docs/D2SLAM_DATASET_ZH.md
 
 # Temporary files
 *.log
