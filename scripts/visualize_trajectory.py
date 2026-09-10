@@ -104,6 +104,27 @@ def main():
     in_range = np.isfinite(interpolated_p).all(axis=1)
     est_p = est_p[in_range]
     gt_matched = interpolated_p[in_range]
+    est_t_matched = est_t[in_range]
+
+    if len(gt_matched) < 3:
+        print(
+            "Error: trajectory and groundtruth timestamps do not overlap.",
+            file=sys.stderr,
+        )
+        print(
+            "Groundtruth range: {:.6f} .. {:.6f}".format(
+                gt_t[0], gt_t[-1]
+            ),
+            file=sys.stderr,
+        )
+        if len(est_t_matched):
+            print(
+                "Trajectory range: {:.6f} .. {:.6f}".format(
+                    est_t_matched[0], est_t_matched[-1]
+                ),
+                file=sys.stderr,
+            )
+        return 2
 
     rotation, translation, scale = evaluator.align_umeyama(
         est_p, gt_matched, with_scale=True

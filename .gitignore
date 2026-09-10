@@ -32,7 +32,7 @@ venv/
 
 # Runtime output
 output/
-# results/
+results/
 logs/
 data/
 

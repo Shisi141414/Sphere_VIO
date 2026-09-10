@@ -21,5 +21,5 @@ docker run --rm -it `
   sphere_vio:noetic `
   python3 /repo/scripts/visualize_trajectory.py `
     --groundtruth /data/eight_yaw_1-groundtruth.txt `
-    --trajectory /repo/output/msckf_noyaw_3_short/trajectory.csv
+    --trajectory /repo/output/msckf_yaw_1/trajectory.csv
 ```
