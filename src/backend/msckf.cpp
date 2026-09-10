@@ -338,6 +338,7 @@ bool Msckf::update(const std::vector<MsckfFeature>& features,
         measurements.size() < 2U) {
       continue;
     }
+    ++update_considered_;
 
     const int measurement_count = static_cast<int>(measurements.size());
     const auto landmark = landmark_indices_.find(feature.persistent_id);
@@ -419,12 +420,14 @@ bool Msckf::update(const std::vector<MsckfFeature>& features,
           degrees_of_freedom, options_.feature_chi_square_probability);
       if (!std::isfinite(mahalanobis_squared) ||
           mahalanobis_squared > threshold) {
+        ++update_rejected_gate_;
         continue;
       }
     }
 
     projected_H.push_back(std::move(feature_H));
     projected_residual.push_back(std::move(feature_residual));
+    ++update_accepted_;
   }
 
   if (projected_H.empty()) return false;

@@ -42,7 +42,7 @@ frontend:
   redetection_ratio: 0.75
   runtime_governor:
     budget_ms: 62.5
-    minimum_features_per_camera: 50
+    minimum_features_per_camera: 100
     feature_decay_ratio: 0.85
     feature_recovery_ratio: 1.03
     minimum_pyramid_levels: 0
@@ -59,13 +59,13 @@ frontend:
     orb_levels: 4
     orb_scale_factor: 1.2
     orb_fast_threshold: 20
-    maximum_descriptors: 100
+    maximum_descriptors: 250
 
     maximum_descriptor_distance: 64
     ratio_test: 0.80
     require_mutual_best: true
     maximum_epipolar_angle: 0.003
-    maximum_matches_per_pair: 20
+    maximum_matches_per_pair: 100
 
   # Phase 4C admission gates for current-frame triangulation diagnostics.
   # These do not create landmarks or write depth into temporal tracks.
@@ -119,15 +119,15 @@ backend:
     accelerometer_noise: 1.0e-1
     gyroscope_bias_noise: 1.0e-4
     accelerometer_bias_noise: 1.0e-3
-    pixel_noise: 1.5
-    feature_chi_square_probability: 0.95
+    pixel_noise: 0.5
+    feature_chi_square_probability: 0.99
     time_offset_cam_imu: 0.0
     extrinsic_rotation_perturbation: [0.0, 0.0, 0.0]
     extrinsic_translation_perturbation: [0.0, 0.0, 0.0]
     initialization_duration: 1.0
     minimum_initialization_samples: 20
     maximum_clones: 20
-    maximum_landmarks: 40
+    maximum_landmarks: 0
     maximum_feature_observations: 40
     maximum_frames_without_observation: 5
     initial_covariance_diagonal:

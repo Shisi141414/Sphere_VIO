@@ -1469,6 +1469,16 @@ int OfflineFeatureRunner::run() {
             << "\n  dropped_frames: " << dropped_frames
             << "\n  cpu_core_hours_per_frame: " << cpu_core_hours_per_frame
             << std::endl;
+  if (msckf_backend) {
+    std::cout << "\nMSCKF update diagnostics"
+              << "\n  considered_features: "
+              << msckf_backend->updateConsidered()
+              << "\n  accepted_features: " << msckf_backend->updateAccepted()
+              << "\n  gate_rejected_features: "
+              << msckf_backend->updateRejectedGate()
+              << "\n  landmark_count: " << msckf_backend->landmarkCount()
+              << std::endl;
+  }
 
   output_recorder.close();
   return completed_frames == 0U ? 7 : 0;

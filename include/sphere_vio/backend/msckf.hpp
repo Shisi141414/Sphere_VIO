@@ -104,6 +104,9 @@ class Msckf {
   const Eigen::MatrixXd& covariance() const { return covariance_; }
   std::size_t cloneCount() const { return clones_.size(); }
   std::size_t landmarkCount() const { return landmark_positions_.size(); }
+  std::size_t updateConsidered() const { return update_considered_; }
+  std::size_t updateAccepted() const { return update_accepted_; }
+  std::size_t updateRejectedGate() const { return update_rejected_gate_; }
 
   bool initialize(const ImuMeasurement& measurement);
   // Accumulates an IMU window and initializes gravity direction, gyro bias,
@@ -163,6 +166,9 @@ class Msckf {
   std::map<std::uint64_t, int> landmark_indices_;
   std::map<std::uint64_t, Eigen::Vector3d> landmark_positions_;
   std::vector<ImuMeasurement> initialization_buffer_;
+  std::size_t update_considered_ = 0U;
+  std::size_t update_accepted_ = 0U;
+  std::size_t update_rejected_gate_ = 0U;
   bool initialized_ = false;
 };
 
