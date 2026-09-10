@@ -15,6 +15,17 @@ void readIfPresent(const YAML::Node& node, const char* key, T* value) {
   if (node && node[key]) *value = node[key].as<T>();
 }
 
+void readVector3IfPresent(const YAML::Node& node, const char* key,
+                          Eigen::Vector3d* value) {
+  if (!node || !node[key] || !node[key].IsSequence() ||
+      node[key].size() != 3U || !value) {
+    return;
+  }
+  *value = Eigen::Vector3d(node[key][0].as<double>(),
+                           node[key][1].as<double>(),
+                           node[key][2].as<double>());
+}
+
 }  // namespace
 
 bool loadTemporalFrontendOptions(const std::string& config_file,
@@ -105,6 +116,8 @@ bool loadCrossCameraOptions(
                   &descriptor_options->scale_factor);
     readIfPresent(cross_camera, "orb_fast_threshold",
                   &descriptor_options->fast_threshold);
+    readIfPresent(cross_camera, "maximum_descriptors",
+                  &descriptor_options->maximum_descriptors);
     readIfPresent(cross_camera, "maximum_descriptor_distance",
                   &matcher_options->maximum_descriptor_distance);
     readIfPresent(cross_camera, "ratio_test", &matcher_options->ratio_test);
@@ -112,6 +125,8 @@ bool loadCrossCameraOptions(
                   &matcher_options->require_mutual_best);
     readIfPresent(cross_camera, "maximum_epipolar_angle",
                   &matcher_options->maximum_epipolar_angle);
+    readIfPresent(cross_camera, "maximum_matches_per_pair",
+                  &matcher_options->maximum_matches_per_pair);
 
     const YAML::Node pairs = cross_camera["camera_pairs"];
     if (!pairs || !pairs.IsSequence()) {
@@ -152,12 +167,14 @@ bool loadCrossCameraOptions(
       !std::isfinite(descriptor_options->scale_factor) ||
       descriptor_options->scale_factor <= 1.0 ||
       descriptor_options->fast_threshold < 0 ||
+      descriptor_options->maximum_descriptors == 0U ||
       !std::isfinite(matcher_options->maximum_descriptor_distance) ||
       matcher_options->maximum_descriptor_distance < 0.0 ||
       !std::isfinite(matcher_options->ratio_test) ||
       matcher_options->ratio_test <= 0.0 || matcher_options->ratio_test >= 1.0 ||
       !std::isfinite(matcher_options->maximum_epipolar_angle) ||
-      matcher_options->maximum_epipolar_angle < 0.0) {
+      matcher_options->maximum_epipolar_angle < 0.0 ||
+      matcher_options->maximum_matches_per_pair == 0U) {
     if (error) *error = "cross-camera parameters are outside valid ranges";
     return false;
   }
@@ -281,8 +298,20 @@ bool loadMsckfOptions(const std::string& config_file,
     readIfPresent(msckf, "pixel_noise", &msckf_options->pixel_noise);
     readIfPresent(msckf, "feature_chi_square_probability",
                   &msckf_options->feature_chi_square_probability);
+    readIfPresent(msckf, "time_offset_cam_imu",
+                  &msckf_options->time_offset_cam_imu);
+    readVector3IfPresent(msckf, "extrinsic_rotation_perturbation",
+                         &msckf_options->extrinsic_rotation_perturbation);
+    readVector3IfPresent(msckf, "extrinsic_translation_perturbation",
+                         &msckf_options->extrinsic_translation_perturbation);
+    readIfPresent(msckf, "initialization_duration",
+                  &msckf_options->initialization_duration);
+    readIfPresent(msckf, "minimum_initialization_samples",
+                  &msckf_options->minimum_initialization_samples);
     readIfPresent(msckf, "maximum_clones",
                   &msckf_options->maximum_clones);
+    readIfPresent(msckf, "maximum_landmarks",
+                  &msckf_options->maximum_landmarks);
     readIfPresent(msckf, "maximum_feature_observations",
                   &msckf_options->maximum_feature_observations);
     readIfPresent(msckf, "maximum_frames_without_observation",
@@ -323,10 +352,53 @@ bool loadMsckfOptions(const std::string& config_file,
       !std::isfinite(msckf_options->feature_chi_square_probability) ||
       msckf_options->feature_chi_square_probability <= 0.0 ||
       msckf_options->feature_chi_square_probability >= 1.0 ||
+      !std::isfinite(msckf_options->time_offset_cam_imu) ||
+      !msckf_options->extrinsic_rotation_perturbation.allFinite() ||
+      !msckf_options->extrinsic_translation_perturbation.allFinite() ||
+      !std::isfinite(msckf_options->initialization_duration) ||
+      msckf_options->initialization_duration <= 0.0 ||
+      msckf_options->minimum_initialization_samples < 2U ||
       msckf_options->maximum_clones < 2 ||
+      msckf_options->maximum_landmarks < 0 ||
       msckf_options->maximum_feature_observations < 2U ||
       msckf_options->maximum_frames_without_observation == 0U) {
     if (error) *error = "backend.msckf parameters are outside valid ranges";
+    return false;
+  }
+  return true;
+}
+
+bool loadRuntimeGovernorOptions(const std::string& config_file,
+                                RuntimeGovernorOptions* options,
+                                std::string* error) {
+  if (!options) return false;
+  try {
+    const YAML::Node root = YAML::LoadFile(config_file);
+    const YAML::Node runtime = root["frontend"]["runtime_governor"];
+    if (runtime) {
+      readIfPresent(runtime, "budget_ms", &options->budget_ms);
+      readIfPresent(runtime, "minimum_features_per_camera",
+                    &options->minimum_features_per_camera);
+      readIfPresent(runtime, "feature_decay_ratio",
+                    &options->feature_decay_ratio);
+      readIfPresent(runtime, "feature_recovery_ratio",
+                    &options->feature_recovery_ratio);
+      readIfPresent(runtime, "minimum_pyramid_levels",
+                    &options->minimum_pyramid_levels);
+    }
+  } catch (const YAML::Exception& exception) {
+    if (error) *error = exception.what();
+    return false;
+  }
+  if (!std::isfinite(options->budget_ms) || options->budget_ms <= 0.0 ||
+      options->minimum_features_per_camera == 0U ||
+      !std::isfinite(options->feature_decay_ratio) ||
+      options->feature_decay_ratio <= 0.0 ||
+      options->feature_decay_ratio >= 1.0 ||
+      !std::isfinite(options->feature_recovery_ratio) ||
+      options->feature_recovery_ratio <= 1.0 ||
+      options->minimum_pyramid_levels < 0) {
+    if (error) *error = "runtime governor parameters are outside valid ranges";
     return false;
   }
   return true;

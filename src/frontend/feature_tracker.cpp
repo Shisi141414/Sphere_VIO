@@ -36,6 +36,10 @@ bool insideBorder(const cv::Point2f& point, int width, int height,
 FeatureTracker::FeatureTracker(FeatureTrackerOptions options)
     : options_(std::move(options)) {}
 
+void FeatureTracker::setPyramidLevels(int pyramid_levels) {
+  if (pyramid_levels >= 0) options_.pyramid_levels = pyramid_levels;
+}
+
 bool FeatureTracker::track(
     const cv::Mat& previous_image, const cv::Mat& current_image,
     Timestamp current_timestamp, CameraId camera_id,

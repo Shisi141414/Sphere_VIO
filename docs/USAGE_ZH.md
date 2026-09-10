@@ -440,3 +440,263 @@ LandmarkTrack 生命周期：
 或 TF，因此不能用 `evo` 直接评估轨迹精度。预研结论应聚焦在数据完整性、特征前端
 稳定性、跨相机几何自洽性和全景重映射可行性；在得到稳定的 LandmarkTrack 和
 几何基线后，再进入逆深度滤波、ESKF 后端与真实轨迹评估。
+
+## 11. D2SLAM 全量数据集运行方法
+
+本节给出在新 D2SLAM 四合一压缩图数据集上跑完整 MSCKF 的具体步骤。离线 runner
+已经支持直接读取原始 `-sync.bag`，不需要再运行 `convert_d2slam_quad.py` 生成中间
+全量 Sphere-VIO bag。
+
+完整数据集结构、序列规模和话题说明见：
+
+```text
+docs/FULL_DATASET_ZH.md
+```
+
+### 11.1 数据目录
+
+```text
+C:\HHQ_STUDY\RM_QY\Drone\oiv_and_slam\D2dataset\quadcam_7inch_n3_2023_1_14
+```
+
+全量测试使用的 5 个序列：
+
+```text
+eight_noyaw_1
+eight_noyaw_3_short
+eight_noyaw_4
+eight_noyaw_5
+eight_yaw_1
+```
+
+每个序列的 rosbag 位于：
+
+```text
+quadcam_7inch_n3_2023_1_14\eight_<seq>-sync.bag
+```
+
+groundtruth 位于数据集根目录：
+
+```text
+eight_<seq>-groundtruth.txt
+```
+
+groundtruth 格式为 `timestamp x y z qx qy qz qw`。
+
+### 11.2 准备工作
+
+构建或使用最新镜像：
+
+```powershell
+cd C:\HHQ_STUDY\RM_QY\Drone\oiv_and_slam\Sphere_VIO
+docker build -t sphere_vio:noetic .
+```
+
+`eight_yaw_1-sync.bag` 原始文件可能未建立索引，首次运行前需要 reindex：
+
+```powershell
+docker run --rm -v `
+  "C:\HHQ_STUDY\RM_QY\Drone\oiv_and_slam\D2dataset\quadcam_7inch_n3_2023_1_14:/data" `
+  sphere_vio:noetic bash -lc `
+  "source /opt/ros/noetic/setup.bash; rosbag reindex /data/quadcam_7inch_n3_2023_1_14/eight_yaw_1-sync.bag"
+```
+
+### 11.3 单序列运行
+
+以 `eight_noyaw_3_short` 为例：
+
+```powershell
+$repo = "C:\HHQ_STUDY\RM_QY\Drone\oiv_and_slam\Sphere_VIO"
+$data = "C:\HHQ_STUDY\RM_QY\Drone\oiv_and_slam\D2dataset\quadcam_7inch_n3_2023_1_14"
+
+docker run --rm -v "$repo:/repo" -v "$data:/data" `
+  sphere_vio:noetic bash -lc `
+  "source /opt/ros/noetic/setup.bash; source /root/catkin_ws/devel/setup.bash; `
+   rosrun sphere_vio sphere_vio_feature_runner `
+     --config /repo/config/offline.yaml `
+     --frontend-config /repo/config/system.yaml `
+     --cameras /repo/config/cameras_d2slam.yaml `
+     --bag /data/quadcam_7inch_n3_2023_1_14/eight_noyaw_3_short-sync.bag `
+     --msckf `
+     --output-dir /repo/output/msckf_eight_noyaw_3_short"
+```
+
+关键说明：
+
+- `--config` 使用 `config/offline.yaml`，其中已经配置原始 D2SLAM 四合一压缩图话题
+  `/arducam/image/compressed` 和 DJI IMU 话题 `/dji_sdk_1/dji_sdk/imu`。
+- `--cameras` 使用 D2SLAM 7-inch-n3 标定转换后的 `config/cameras_d2slam.yaml`。
+- `--msckf` 会自动启用跨相机匹配、三角化候选、LandmarkTrack 和 MSCKF 后端。
+- 输出目录包含：
+
+```text
+odometry.csv
+trajectory.csv
+landmarks.csv
+```
+
+其中 `trajectory.csv` 是严格 TUM 顺序：
+
+```text
+timestamp,x,y,z,qx,qy,qz,qw
+```
+
+### 11.4 批量运行全部序列
+
+```powershell
+$repo = "C:\HHQ_STUDY\RM_QY\Drone\oiv_and_slam\Sphere_VIO"
+$data = "C:\HHQ_STUDY\RM_QY\Drone\oiv_and_slam\D2dataset\quadcam_7inch_n3_2023_1_14"
+
+$sequences = @(
+  "eight_noyaw_1",
+  "eight_noyaw_3_short",
+  "eight_noyaw_4",
+  "eight_noyaw_5",
+  "eight_yaw_1"
+)
+
+foreach ($seq in $sequences) {
+  $cmd = "source /opt/ros/noetic/setup.bash; " +
+         "source /root/catkin_ws/devel/setup.bash; " +
+         "rosrun sphere_vio sphere_vio_feature_runner " +
+         "--config /repo/config/offline.yaml " +
+         "--frontend-config /repo/config/system.yaml " +
+         "--cameras /repo/config/cameras_d2slam.yaml " +
+         "--bag /data/quadcam_7inch_n3_2023_1_14/${seq}-sync.bag " +
+         "--msckf " +
+         "--output-dir /repo/output/msckf_${seq}"
+
+  docker run --rm -v "${repo}:/repo" -v "${data}:/data" `
+    sphere_vio:noetic bash -lc $cmd
+}
+```
+
+### 11.5 评测
+
+使用仓库内评测脚本：
+
+```powershell
+docker run --rm -v "${repo}:/repo" -v "${data}:/data" `
+  sphere_vio:noetic python3 `
+  /repo/scripts/evaluate_sphere_vio.py `
+    --groundtruth /data/eight_noyaw_3_short-groundtruth.txt `
+    --trajectory /repo/output/msckf_eight_noyaw_3_short/trajectory.csv `
+    --output-period 0.05 `
+    --output-report /repo/result/report_eight_noyaw_3_short.md
+```
+
+评测脚本会输出 `ATE_SE3`、`ATE_Sim3`、`RPE_1m/5m/10m`、`coverage`、
+`max_pose_interval`、`has_nan_inf` 和 `success`。完整指标定义见
+`docs/INDEX_LIST.md`。
+
+批量评测全部
+```powershell
+$sequences = @(
+  "eight_noyaw_1",
+  "eight_noyaw_3_short",
+  "eight_noyaw_4",
+  "eight_noyaw_5",
+  "eight_yaw_1"
+)
+
+foreach ($seq in $sequences) {
+  docker run --rm -v "${repo}:/repo" -v "${data}:/data" `
+    sphere_vio:noetic python3 `
+    /repo/scripts/evaluate_sphere_vio.py `
+      --groundtruth /data/${seq}-groundtruth.txt `
+      --trajectory /repo/output/msckf_${seq}/trajectory.csv `
+      --output-period 0.05 `
+      --output-report /repo/result/report_${seq}.md
+}
+```
+
+### 11.6 可视化轨迹
+
+在 Xlaunch 可用时，可以用 OpenCV 轨迹窗口检查 GT 与估计轨迹：
+
+```powershell
+docker run --rm -it `
+  -e DISPLAY=host.docker.internal:0.0 `
+  -v "$repo:/repo" `
+  -v "$data:/data" `
+  sphere_vio:noetic python3 `
+  /repo/scripts/visualize_trajectory.py `
+    --groundtruth /data/eight_noyaw_3_short-groundtruth.txt `
+    --trajectory /repo/output/msckf_eight_noyaw_3_short/trajectory.csv
+```
+
+## 12. 仓库目录与文件说明
+
+### 12.1 顶层文件
+
+| 文件 | 功能与特点 |
+| --- | --- |
+| `CMakeLists.txt` | catkin/CMake 构建入口，定义 `sphere_vio_core/camera/geometry/panorama/frontend/backend/ros` 库、可执行程序和 gtest 目标 |
+| `package.xml` | ROS1 catkin 包元数据，声明 `cv_bridge`、`rosbag`、`message_filters`、`tf2` 等依赖 |
+| `Dockerfile` | 构建 `sphere_vio:noetic` 镜像，安装 ROS Noetic、OpenCV、Eigen、yaml-cpp，并执行 `catkin_make` |
+| `docker/entrypoint.sh` | 容器入口，自动 source ROS 和 catkin workspace 后再执行用户命令 |
+| `.dockerignore` | 避免把 `.git`、`data`、`output`、`.bag` 等大文件带入镜像 |
+| `.devcontainer/`、`.vscode/`、`.clangd` | 开发容器和 IDE/编辑器配置 |
+
+### 12.2 `config/`
+
+| 文件 | 功能与特点 |
+| --- | --- |
+| `offline.yaml` | 离线 runner 的 bag 路径、相机/IMU 话题、同步参数、起止时间和进度参数 |
+| `system.yaml` | 前端参数、跨相机匹配、三角化门控、LandmarkTrack、runtime governor、后端 MSCKF 参数 |
+| `cameras.yaml` | 通用四目标定，非 D2SLAM 数据集场景使用 |
+| `cameras_d2slam.yaml` | D2SLAM 7-inch-n3 标定转换结果，全量数据集使用 |
+| `d2slam/quad_cam_calib-camchain-imucam-7-inch-n3.yaml` | D2SLAM 原始标定 |
+| `d2slam/quadcam_multi.yaml`、`quadcam_single.yaml` | D2VINS/D2SLAM 实验编排参考文件 |
+
+### 12.3 `include/` 与 `src/` 模块
+
+| 模块 | 主要文件 | 功能与特点 |
+| --- | --- | --- |
+| 相机模型 | `camera/camera_model.hpp`、`camera/omni_radtan.*`、`camera/kannala_brandt.*` | 统一相机投影/反投影接口，实现 Omni+Radtan 和 Kannala-Brandt 鱼眼模型 |
+| 四目标定 | `camera/camera_rig.hpp`、`common/camera_rig_loader.*` | 多相机外参链、pixel/bearing/body 转换和 YAML 加载 |
+| 几何 | `geometry/spherical_geometry.*`、`epipolar_geometry.*`、`triangulation.*` | 球面坐标、极线约束、两视图三角化 |
+| 前端检测跟踪 | `frontend/feature_detector.*`、`feature_tracker.*`、`temporal_frontend.*` | FAST 网格检测、LK 金字塔跟踪、四路时序前端 |
+| 前端匹配 | `frontend/orb_descriptor_extractor.*`、`cross_camera_matcher.*` | ORB 描述子、跨相机双向匹配和球面极线过滤 |
+| 前端候选与关联 | `frontend/triangulation_candidate_evaluator.*`、`landmark_track_manager.*`、`landmark_track.hpp` | 当前帧三角化门控、LandmarkTrack 生命周期 |
+| 后端 | `backend/eskf.*`、`backend/msckf.*`、`backend/landmark_map.*` | ESKF、滑窗 MSCKF、持久 landmark 协方差状态 |
+| ROS 层 | `ros/frame_assembler.*`、`ros/d2slam_stitched.*`、`ros/offline_feature_runner.*`、`ros/offline_bag_runner.*`、`ros/offline_panorama_runner.*`、`ros/offline_bag_visualizer.*`、`ros/output_recorder.*`、`ros/ros_output.*`、`ros/ros_conversions.*`、`ros/sensor_inspector_node.*` | 离线 bag 读取、四合一图拆分、前端/后端 runner、全景 runner、可视化、CSV 输出、ROS 输出 |
+| IMU 缓冲 | `imu_interval_buffer.*` | IMU 时间戳排序、区间抽取和统计 |
+| 全景 | `panorama/uspm.*`、`panorama/panorama_remapper.*`、`panorama/panorama_spec.hpp` | 有限半径 USPM、全景重映射与覆盖 mask |
+
+### 12.4 `scripts/`
+
+| 文件 | 功能与特点 |
+| --- | --- |
+| `convert_d2slam_quad.py` | 把 D2SLAM 四合一 bag 转换成四路 Sphere-VIO bag |
+| `convert_d2slam_calib.py` | 把 D2SLAM Kalibr 标定转换成 `cameras_d2slam.yaml` |
+| `evaluate_d2slam.py` | 早期 D2SLAM 轨迹评测脚本 |
+| `evaluate_sphere_vio.py` | 全量评测脚本，输出 ATE_SE3/ATE_Sim3/RPE/coverage/success |
+| `visualize_trajectory.py` | 用 OpenCV 三视图显示 GT 与估计轨迹 |
+| `make_synthetic_bag.py` | 生成小型合成 rosbag 用于 smoke test |
+
+### 12.5 `test/`
+
+包含各模块的 gtest 单元测试，以及 `test_main.cpp` 的 GoogleTest 入口和
+`frontend_test_utils.hpp` 的测试工具。新增的 `test_d2slam_stitched.cpp` 验证四合一
+图像拆分，`test_msckf.cpp` 验证 IMU 初始化、特征累加器、持久 landmark 协方差增广。
+
+### 12.6 `docs/`
+
+| 文件 | 内容 |
+| --- | --- |
+| `FULL_DATASET_ZH.md` | 全量数据集结构和运行说明 |
+| `USAGE_ZH.md` | 总使用手册、Docker/Xlaunch/运行命令 |
+| `INDEX_LIST.md` | 评测指标定义 |
+| `SPHERE_VIO_IMPLEMENTATION_GUIDE.md` | 详细实现指南 |
+| `MSCKF_ZH.md` | MSCKF 后端说明 |
+| `BACKEND_ESKF_ZH.md` | ESKF 后端说明 |
+| `D2SLAM_DATASET_SHORT_ZH.md` | D2SLAM 早期小数据集接入说明 |
+
+### 12.7 `data/`、`output/`、`result/`
+
+| 目录 | 用途 |
+| --- | --- |
+| `data/` | 本地 smoke bag 和转换后的 Sphere-VIO bag，不进入 Git |
+| `output/` | 各次运行生成的 `odometry.csv`、`trajectory.csv`、`landmarks.csv`、日志和全景图 |
+| `result/` | 全量评测报告、改进日志、运行日志和汇总表 |

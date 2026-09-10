@@ -53,6 +53,9 @@ class TemporalFrontend {
                     const CameraRig& camera_rig,
                     MultiCameraTrackingResult* result);
 
+  void setMaximumFeaturesPerCamera(std::size_t maximum_features);
+  void setPyramidLevels(int pyramid_levels);
+
   // Resetting state does not reuse FeatureIds during this object's lifetime.
   void reset();
   void resetCamera(CameraId camera_id);

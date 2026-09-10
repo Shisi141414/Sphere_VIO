@@ -17,6 +17,7 @@ struct CrossCameraMatcherOptions {
   double ratio_test = 0.80;
   bool require_mutual_best = true;
   double maximum_epipolar_angle = 0.003;
+  std::size_t maximum_matches_per_pair = 100U;
 };
 
 struct CrossCameraMatch {

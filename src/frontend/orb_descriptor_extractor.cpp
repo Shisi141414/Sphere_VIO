@@ -15,7 +15,7 @@ bool validOptions(const OrbDescriptorExtractorOptions& options) {
   return options.patch_size > 0 && options.patch_size % 2 == 1 &&
          options.edge_threshold >= 0 && options.levels > 0 &&
          std::isfinite(options.scale_factor) && options.scale_factor > 1.0 &&
-         options.fast_threshold >= 0;
+         options.fast_threshold >= 0 && options.maximum_descriptors > 0U;
 }
 
 bool insideImage(const Eigen::Vector2d& pixel, int width, int height) {
@@ -89,6 +89,12 @@ bool OrbDescriptorExtractor::extract(
         static_cast<float>(options_.patch_size));
     keypoint.class_id = static_cast<int>(index);
     keypoints.push_back(keypoint);
+  }
+
+  if (keypoints.size() > options_.maximum_descriptors) {
+    statistics->descriptor_cap_rejections =
+        keypoints.size() - options_.maximum_descriptors;
+    keypoints.resize(options_.maximum_descriptors);
   }
 
   const std::size_t submitted_count = keypoints.size();

@@ -267,6 +267,12 @@ int main(int argc, char** argv) {
     std::cerr << "Invalid MSCKF configuration: " << error << std::endl;
     return EXIT_FAILURE;
   }
+  if (!sphere_vio::loadRuntimeGovernorOptions(
+          frontend_config, &options.runtime_governor, &error)) {
+    std::cerr << "Invalid runtime governor configuration: " << error
+              << std::endl;
+    return EXIT_FAILURE;
+  }
   if (command_line.has_msckf_pixel_noise) {
     options.msckf.pixel_noise = command_line.msckf_pixel_noise;
   }

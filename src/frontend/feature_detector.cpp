@@ -43,6 +43,10 @@ bool sufficientlyFar(const Eigen::Vector2d& pixel,
 FeatureDetector::FeatureDetector(FeatureDetectorOptions options)
     : options_(std::move(options)) {}
 
+void FeatureDetector::setMaximumFeatures(std::size_t maximum_features) {
+  if (maximum_features > 0U) options_.maximum_features = maximum_features;
+}
+
 bool FeatureDetector::detect(
     const cv::Mat& grayscale_image, Timestamp timestamp, CameraId camera_id,
     const CameraRig& camera_rig,

@@ -28,7 +28,8 @@ bool validOptions(const CrossCameraMatcherOptions& options) {
       !std::isfinite(options.ratio_test) || options.ratio_test <= 0.0 ||
       options.ratio_test >= 1.0 ||
       !std::isfinite(options.maximum_epipolar_angle) ||
-      options.maximum_epipolar_angle < 0.0) {
+      options.maximum_epipolar_angle < 0.0 ||
+      options.maximum_matches_per_pair == 0U) {
     return false;
   }
   std::set<std::pair<CameraId, CameraId>> unique_pairs;
@@ -264,6 +265,9 @@ bool CrossCameraMatcher::matchPair(
   }
   std::stable_sort(result->matches.begin(), result->matches.end(),
                    finalMatchOrder);
+  if (result->matches.size() > options_.maximum_matches_per_pair) {
+    result->matches.resize(options_.maximum_matches_per_pair);
+  }
   result->processing_time_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
           .count();

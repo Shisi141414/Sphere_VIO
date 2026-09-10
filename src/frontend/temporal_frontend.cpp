@@ -30,6 +30,17 @@ TemporalFrontend::TemporalFrontend(TemporalFrontendOptions options)
       detector_(options_.detector),
       tracker_(options_.tracker) {}
 
+void TemporalFrontend::setMaximumFeaturesPerCamera(
+    std::size_t maximum_features) {
+  options_.detector.maximum_features = maximum_features;
+  detector_.setMaximumFeatures(maximum_features);
+}
+
+void TemporalFrontend::setPyramidLevels(int pyramid_levels) {
+  options_.tracker.pyramid_levels = pyramid_levels;
+  tracker_.setPyramidLevels(pyramid_levels);
+}
+
 bool TemporalFrontend::processFrame(const MultiCameraFrame& frame,
                                     const CameraRig& camera_rig,
                                     MultiCameraTrackingResult* result) {

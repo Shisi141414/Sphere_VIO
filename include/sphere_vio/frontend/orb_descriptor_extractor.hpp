@@ -17,6 +17,7 @@ struct OrbDescriptorExtractorOptions {
   int levels = 4;
   double scale_factor = 1.2;
   int fast_threshold = 20;
+  std::size_t maximum_descriptors = 180U;
 };
 
 struct DescriptorExtractionStatistics {
@@ -26,6 +27,7 @@ struct DescriptorExtractionStatistics {
   std::size_t orb_discarded = 0U;
   std::size_t empty_descriptor_rejections = 0U;
   std::size_t invalid_descriptor_type_rejections = 0U;
+  std::size_t descriptor_cap_rejections = 0U;
   std::size_t accepted = 0U;
 };
 

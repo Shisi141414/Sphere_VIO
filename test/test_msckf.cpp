@@ -64,4 +64,44 @@ TEST(MsckfFeatureAccumulatorTest, RecordsAndPrunesObservations) {
   EXPECT_EQ(accumulator.keys().size(), 1U);
 }
 
+TEST(MsckfTest, InitializesGravityAndBiasesFromStationaryWindow) {
+  MsckfOptions options;
+  options.initialization_duration = 0.5;
+  options.minimum_initialization_samples = 3U;
+  options.gravity_magnitude = 9.81;
+  Msckf msckf(options);
+
+  const Eigen::Vector3d gravity_body =
+      Eigen::Vector3d(0.28, 0.35, 0.894).normalized();
+  const Eigen::Vector3d gyro_bias(0.01, -0.02, 0.005);
+  std::vector<ImuMeasurement> measurements;
+  for (double timestamp = 0.0; timestamp <= 0.6; timestamp += 0.1) {
+    ImuMeasurement measurement = makeImu(timestamp);
+    measurement.acceleration = 9.81 * gravity_body;
+    measurement.angular_velocity = gyro_bias;
+    measurements.push_back(measurement);
+  }
+
+  ASSERT_TRUE(msckf.initialize(measurements, 0.6));
+  EXPECT_TRUE(msckf.initialized());
+  EXPECT_TRUE(msckf.state().bias_gyro.isApprox(gyro_bias, 1e-6));
+  const Eigen::Vector3d recovered_gravity =
+      msckf.state().q_wb.conjugate() *
+      (9.81 * Eigen::Vector3d::UnitZ());
+  EXPECT_TRUE(recovered_gravity.isApprox(9.81 * gravity_body, 1e-4));
+  EXPECT_LT(msckf.state().bias_accel.norm(), 1e-4);
+}
+
+TEST(MsckfTest, AugmentsLandmarkCovarianceBlock) {
+  MsckfOptions options;
+  options.maximum_landmarks = 1;
+  Msckf msckf(options);
+  ASSERT_TRUE(msckf.initialize(makeImu(0.0)));
+
+  EXPECT_TRUE(msckf.augmentLandmark(42U, Eigen::Vector3d(1.0, 2.0, 3.0)));
+  EXPECT_EQ(msckf.landmarkCount(), 1U);
+  EXPECT_EQ(msckf.covariance().rows(), 18);
+  EXPECT_TRUE(msckf.covariance().allFinite());
+}
+
 }  // namespace

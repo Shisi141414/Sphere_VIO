@@ -24,6 +24,7 @@ class FeatureTracker {
   explicit FeatureTracker(FeatureTrackerOptions options = {});
 
   const FeatureTrackerOptions& options() const { return options_; }
+  void setPyramidLevels(int pyramid_levels);
 
   bool track(const cv::Mat& previous_image, const cv::Mat& current_image,
              Timestamp current_timestamp, CameraId camera_id,

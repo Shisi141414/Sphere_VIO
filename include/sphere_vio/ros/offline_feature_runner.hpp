@@ -12,6 +12,14 @@
 
 namespace sphere_vio {
 
+struct RuntimeGovernorOptions {
+  double budget_ms = 62.5;
+  std::size_t minimum_features_per_camera = 100U;
+  double feature_decay_ratio = 0.90;
+  double feature_recovery_ratio = 1.02;
+  int minimum_pyramid_levels = 1;
+};
+
 struct OfflineFeatureRunnerOptions {
   OfflineBagConfiguration bag;
   TemporalFrontendOptions frontend;
@@ -28,6 +36,7 @@ struct OfflineFeatureRunnerOptions {
   EskfOptions backend;
   bool enable_msckf = false;
   MsckfOptions msckf;
+  RuntimeGovernorOptions runtime_governor;
   double backend_position_noise = 0.20;
   std::string output_directory;
   bool publish_ros = false;

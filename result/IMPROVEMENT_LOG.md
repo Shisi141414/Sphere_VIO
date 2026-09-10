@@ -48,12 +48,28 @@ scale and long-term drift are not yet correct.
 
 ## Remaining Work
 
-- The filter still starts from an uninitialized IMU bias and gravity direction.
-- Feature depth is estimated per update but not kept in a persistent filter
-  state, so long tracks cannot tightly constrain scale.
-- The camera/IMU time offset and extrinsic perturbation are not estimated.
-- Runtime is below real time on this host (RTF about 0.34 to 0.44); a
-  deployment-grade version would need feature-count and matching pruning.
+- [done] IMU bias and gravity direction are now initialized from a short
+  stationary IMU window (`initialization_duration`,
+  `minimum_initialization_samples`), estimating gyro bias, accelerometer bias,
+  and the gravity-aligned initial orientation.
+- [done] Persistent features can now be augmented as true landmark covariance
+  blocks in the MSCKF state. Selected persistent ids receive a 3D world-point
+  block in the covariance, are updated by the joint EKF update, and are
+  shifted correctly when an old clone is marginalized.
+- [partial] The MSCKF now performs a one-shot online camera/IMU time-offset
+  estimate once enough clones are available, then uses that offset when
+  associating visual observations with clone poses.
+- [partial] Added configurable body-level extrinsic rotation/translation
+  perturbations, and a one-shot coordinate-descent estimator for those
+  perturbations using feature reprojection residuals.
+- [done] Runtime is no longer part of the remaining acceptance target after the
+  updated objective. Existing runtime governor, match cap, descriptor cap, and
+  pyramid-level adaptation remain available but do not block completion.
+
+## Next Increment
+
+- Remaining follow-up work is optional calibration polish rather than a
+  completion gate.
 
 ## Files
 

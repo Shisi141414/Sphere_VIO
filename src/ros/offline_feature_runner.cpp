@@ -203,6 +203,8 @@ std::vector<MsckfFeature> buildMsckfFeatures(
     if (track.state == LandmarkTrackState::kRetired) continue;
     MsckfFeature feature;
     feature.id = (*next_feature_id)++;
+    feature.persistent_id =
+        (static_cast<std::uint64_t>(1U) << 63U) | track.id.value;
     for (const auto& member : track.member_features) {
       const std::vector<MsckfObservation>* observations =
           accumulator.observations(member.second.camera_id,
@@ -224,6 +226,7 @@ std::vector<MsckfFeature> buildMsckfFeatures(
     if (!observations || observations->size() < 2U) continue;
     MsckfFeature feature;
     feature.id = (*next_feature_id)++;
+    feature.persistent_id = key.feature_id;
     feature.observations = *observations;
     sortObservations(&feature.observations);
     features.push_back(std::move(feature));
@@ -819,6 +822,8 @@ int OfflineFeatureRunner::run() {
       options_.msckf.maximum_feature_observations);
   std::uint64_t msckf_next_feature_id = 1U;
   std::uint64_t input_frame_count = 0U;
+  bool msckf_time_offset_estimated = false;
+  bool msckf_extrinsics_estimated = false;
   if (options_.enable_msckf) {
     msckf_backend.reset(new Msckf(options_.msckf));
     backend_landmarks.reset(new BackendLandmarkMap());
@@ -874,6 +879,12 @@ int OfflineFeatureRunner::run() {
   std::uint64_t completed_frames = 0U;
   Timestamp first_frame_timestamp = 0.0;
   Timestamp last_frame_timestamp = 0.0;
+  std::size_t runtime_max_features =
+      options_.frontend.detector.maximum_features;
+  const std::size_t runtime_initial_max_features = runtime_max_features;
+  int runtime_pyramid_levels = options_.frontend.tracker.pyramid_levels;
+  const int runtime_initial_pyramid_levels = runtime_pyramid_levels;
+  double last_frame_time_ms = 0.0;
   double cross_camera_processing_time_sum = 0.0;
   double maximum_cross_camera_processing_time = 0.0;
 
@@ -925,6 +936,7 @@ int OfflineFeatureRunner::run() {
         continue;
       }
 
+      const auto frame_start = std::chrono::steady_clock::now();
       MultiCameraTrackingResult tracking_result;
       if (!frontend.processFrame(frame, camera_rig, &tracking_result)) {
         std::cerr << "Frontend rejected completed frame "
@@ -946,8 +958,7 @@ int OfflineFeatureRunner::run() {
         if (msckf_backend) {
           if (!msckf_backend->initialized()) {
             if (!interval.empty()) {
-              msckf_backend->initialize(interval.front());
-              msckf_backend->propagate(interval, frame.timestamp);
+              msckf_backend->initialize(interval, frame.timestamp);
             }
           } else {
             msckf_backend->propagate(interval, frame.timestamp);
@@ -1129,6 +1140,20 @@ int OfflineFeatureRunner::run() {
                 &msckf_next_feature_id);
             msckf_backend->update(msckf_features, camera_rig);
             msckf_backend->marginalizeOldestClone();
+            if (!msckf_time_offset_estimated &&
+                msckf_backend->cloneCount() >= 8U &&
+                !msckf_features.empty()) {
+              msckf_time_offset_estimated = msckf_backend->estimateTimeOffset(
+                  msckf_features, camera_rig);
+            }
+            if (msckf_time_offset_estimated &&
+                !msckf_extrinsics_estimated &&
+                msckf_backend->cloneCount() >= 8U &&
+                !msckf_features.empty()) {
+              msckf_extrinsics_estimated =
+                  msckf_backend->estimateExtrinsicPerturbation(
+                      msckf_features, camera_rig);
+            }
           }
         }
         const double cross_camera_processing_time =
@@ -1207,6 +1232,38 @@ int OfflineFeatureRunner::run() {
           std::cout << "  live landmark hypotheses="
                     << landmark_track_manager->liveTrackCount()
                     << " (observation association only)" << std::endl;
+        }
+      }
+
+      last_frame_time_ms =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - frame_start)
+              .count();
+      const RuntimeGovernorOptions& governor = options_.runtime_governor;
+      if (last_frame_time_ms > governor.budget_ms) {
+        if (runtime_max_features > governor.minimum_features_per_camera) {
+          runtime_max_features = std::max(
+              governor.minimum_features_per_camera,
+              static_cast<std::size_t>(
+                  static_cast<double>(runtime_max_features) *
+                  governor.feature_decay_ratio));
+          frontend.setMaximumFeaturesPerCamera(runtime_max_features);
+        } else if (runtime_pyramid_levels >
+                   governor.minimum_pyramid_levels) {
+          --runtime_pyramid_levels;
+          frontend.setPyramidLevels(runtime_pyramid_levels);
+        }
+      } else if (last_frame_time_ms < 0.70 * governor.budget_ms) {
+        if (runtime_pyramid_levels < runtime_initial_pyramid_levels) {
+          ++runtime_pyramid_levels;
+          frontend.setPyramidLevels(runtime_pyramid_levels);
+        } else if (runtime_max_features < runtime_initial_max_features) {
+          runtime_max_features = std::min(
+              runtime_initial_max_features,
+              static_cast<std::size_t>(
+                  static_cast<double>(runtime_max_features) *
+                  governor.feature_recovery_ratio));
+          frontend.setMaximumFeaturesPerCamera(runtime_max_features);
         }
       }
       break;

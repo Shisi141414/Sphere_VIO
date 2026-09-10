@@ -26,6 +26,7 @@ class FeatureDetector {
   explicit FeatureDetector(FeatureDetectorOptions options = {});
 
   const FeatureDetectorOptions& options() const { return options_; }
+  void setMaximumFeatures(std::size_t maximum_features);
 
   bool detect(const cv::Mat& grayscale_image, Timestamp timestamp,
               CameraId camera_id, const CameraRig& camera_rig,

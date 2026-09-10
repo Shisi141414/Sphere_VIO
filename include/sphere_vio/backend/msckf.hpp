@@ -23,7 +23,15 @@ struct MsckfOptions {
   double accelerometer_bias_noise = 1.0e-3;
   double pixel_noise = 1.5;
   double feature_chi_square_probability = 0.95;
+  double time_offset_cam_imu = 0.0;
+  Eigen::Vector3d extrinsic_rotation_perturbation =
+      Eigen::Vector3d::Zero();
+  Eigen::Vector3d extrinsic_translation_perturbation =
+      Eigen::Vector3d::Zero();
+  double initialization_duration = 1.0;
+  std::size_t minimum_initialization_samples = 20U;
   int maximum_clones = 20;
+  int maximum_landmarks = 40;
   std::size_t maximum_feature_observations = 40U;
   std::uint64_t maximum_frames_without_observation = 5U;
   Eigen::Matrix<double, 15, 15> initial_covariance =
@@ -54,6 +62,7 @@ struct MsckfObservation {
 
 struct MsckfFeature {
   std::uint64_t id = 0U;
+  std::uint64_t persistent_id = 0U;
   std::vector<MsckfObservation> observations;
 };
 
@@ -94,13 +103,26 @@ class Msckf {
   const MsckfCurrentState& state() const { return state_; }
   const Eigen::MatrixXd& covariance() const { return covariance_; }
   std::size_t cloneCount() const { return clones_.size(); }
+  std::size_t landmarkCount() const { return landmark_positions_.size(); }
 
   bool initialize(const ImuMeasurement& measurement);
+  // Accumulates an IMU window and initializes gravity direction, gyro bias,
+  // and accelerometer bias once the window is long enough. Returns false until
+  // initialization completes.
+  bool initialize(const std::vector<ImuMeasurement>& measurements,
+                  Timestamp end_time);
   bool propagate(const std::vector<ImuMeasurement>& measurements,
                  Timestamp end_time);
   bool augmentClone(Timestamp timestamp);
   bool update(const std::vector<MsckfFeature>& features,
               const CameraRig& camera_rig);
+  bool estimateTimeOffset(const std::vector<MsckfFeature>& features,
+                          const CameraRig& camera_rig);
+  bool estimateExtrinsicPerturbation(
+      const std::vector<MsckfFeature>& features,
+      const CameraRig& camera_rig);
+  bool augmentLandmark(std::uint64_t persistent_id,
+                       const Eigen::Vector3d& point_w);
   void marginalizeOldestClone();
 
  private:
@@ -115,23 +137,32 @@ class Msckf {
   bool buildFeatureMeasurements(
       const MsckfFeature& feature, const CameraRig& camera_rig,
       Eigen::Vector3d* point_w,
-      std::vector<FeatureMeasurement>* measurements) const;
+      std::vector<FeatureMeasurement>* measurements);
   bool estimateFeaturePosition(
       const std::vector<FeatureMeasurement>& measurements,
-      const CameraRig& camera_rig, Eigen::Vector3d* point_w) const;
+      const CameraRig& camera_rig, const Eigen::Vector3d* prior,
+      Eigen::Vector3d* point_w) const;
   void propagateSegment(const ImuMeasurement& minus,
                         const ImuMeasurement& plus);
   bool applyErrorState(const Eigen::VectorXd& correction);
+  bool initializeStatic(Timestamp end_time);
   bool computeProjectionAndJacobians(
       const CameraRig& rig, const MsckfClone& clone,
       const FeatureMeasurement& measurement, Eigen::Vector2d* predicted,
       Eigen::Matrix<double, 2, 3>* jacobian_feature,
       Eigen::Matrix<double, 2, 6>* jacobian_clone) const;
+  double featureReprojectionResidual(const MsckfFeature& feature,
+                                     double time_offset,
+                                     const CameraRig& camera_rig) const;
 
   MsckfOptions options_;
   MsckfCurrentState state_;
   Eigen::MatrixXd covariance_;
   std::map<Timestamp, MsckfClone> clones_;
+  std::map<std::uint64_t, Eigen::Vector3d> feature_positions_;
+  std::map<std::uint64_t, int> landmark_indices_;
+  std::map<std::uint64_t, Eigen::Vector3d> landmark_positions_;
+  std::vector<ImuMeasurement> initialization_buffer_;
   bool initialized_ = false;
 };
 
