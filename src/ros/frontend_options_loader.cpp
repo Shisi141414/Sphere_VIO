@@ -28,6 +28,40 @@ void readVector3IfPresent(const YAML::Node& node, const char* key,
 
 }  // namespace
 
+bool loadSynchronizationOptions(const std::string& config_file,
+                                OfflineFeatureRunnerOptions* options,
+                                std::string* error) {
+  if (!options) return false;
+  try {
+    const YAML::Node root = YAML::LoadFile(config_file);
+    const YAML::Node synchronization = root["synchronization"];
+    if (synchronization) {
+      readIfPresent(synchronization, "camera_to_imu_offset_s",
+                    &options->camera_to_imu_offset_s);
+    }
+    const YAML::Node offline = root["offline"];
+    if (offline) {
+      readIfPresent(offline, "output_period", &options->output_period);
+    }
+  } catch (const YAML::Exception& exception) {
+    if (error) *error = exception.what();
+    return false;
+  }
+
+  // A finite time offset is the only hard requirement. The historical +-25 ms
+  // online search is intentionally no longer a fallback, so the configured
+  // value (or the authoritative -0.186 s default) is applied verbatim.
+  if (!std::isfinite(options->camera_to_imu_offset_s) ||
+      !std::isfinite(options->output_period) ||
+      options->output_period < 0.0) {
+    if (error) {
+      *error = "synchronization/offline parameters are outside valid ranges";
+    }
+    return false;
+  }
+  return true;
+}
+
 bool loadTemporalFrontendOptions(const std::string& config_file,
                                  TemporalFrontendOptions* options,
                                  std::string* error) {
@@ -68,6 +102,9 @@ bool loadTemporalFrontendOptions(const std::string& config_file,
                   &options->tracker.maximum_forward_backward_error);
     readIfPresent(frontend, "redetection_ratio",
                   &options->redetection_ratio);
+    std::string pipeline_mode = options->pipeline_mode;
+    readIfPresent(frontend, "pipeline_mode", &pipeline_mode);
+    options->pipeline_mode = std::move(pipeline_mode);
   } catch (const YAML::Exception& exception) {
     if (error) *error = exception.what();
     return false;
@@ -90,6 +127,62 @@ bool loadTemporalFrontendOptions(const std::string& config_file,
       !std::isfinite(options->redetection_ratio) ||
       options->redetection_ratio < 0.0 || options->redetection_ratio > 1.0) {
     if (error) *error = "frontend parameters are outside their valid range";
+    return false;
+  }
+  if (options->pipeline_mode != "legacy_per_camera" &&
+      options->pipeline_mode != "rectified" &&
+      options->pipeline_mode != "superpoint_cuda") {
+    if (error) *error = "unknown frontend.pipeline_mode";
+    return false;
+  }
+  return true;
+}
+
+bool loadSuperPointOptions(const std::string& config_file,
+                           SuperPointExtractorOptions* options,
+                           std::string* error) {
+  if (!options) return false;
+  bool section_present = false;
+  try {
+    const YAML::Node root = YAML::LoadFile(config_file);
+    const YAML::Node superpoint = root["frontend"]["superpoint"];
+    // 配置里没有 superpoint 小节时保留默认值。legacy/rectified 模式本来就不
+    // 需要模型路径；只有 pipeline_mode=superpoint_cuda 时才强制要求该小节。
+    if (superpoint) {
+      section_present = true;
+      readIfPresent(superpoint, "model_path", &options->model_path);
+      readIfPresent(superpoint, "input_width", &options->input_width);
+      readIfPresent(superpoint, "input_height", &options->input_height);
+      readIfPresent(superpoint, "output_width", &options->output_width);
+      readIfPresent(superpoint, "output_height", &options->output_height);
+      readIfPresent(superpoint, "score_threshold",
+                    &options->score_threshold);
+      readIfPresent(superpoint, "nms_radius", &options->nms_radius);
+      readIfPresent(superpoint, "maximum_points_per_camera",
+                    &options->maximum_points_per_camera);
+      readIfPresent(superpoint, "grid_rows", &options->grid_rows);
+      readIfPresent(superpoint, "grid_columns", &options->grid_columns);
+      readIfPresent(superpoint, "require_cuda", &options->require_cuda);
+    }
+  } catch (const YAML::Exception& exception) {
+    if (error) *error = exception.what();
+    return false;
+  }
+
+  // 数值范围校验与 SuperPointExtractor 构造时的 validOptions 保持一致，让
+  // 配置错误在进程启动时（而不是第一帧推理时）就暴露出来。
+  if (!section_present) return true;
+  if (options->input_width <= 0 || options->input_height <= 0 ||
+      options->output_width <= 0 || options->output_height <= 0 ||
+      !std::isfinite(options->score_threshold) ||
+      options->score_threshold < 0.0F || options->nms_radius <= 0 ||
+      options->maximum_points_per_camera == 0U || options->grid_rows == 0U ||
+      options->grid_columns == 0U) {
+    if (error) *error = "superpoint parameters are outside their valid range";
+    return false;
+  }
+  if (options->model_path.empty()) {
+    if (error) *error = "frontend.superpoint.model_path is empty";
     return false;
   }
   return true;
@@ -120,6 +213,8 @@ bool loadCrossCameraOptions(
                   &descriptor_options->maximum_descriptors);
     readIfPresent(cross_camera, "maximum_descriptor_distance",
                   &matcher_options->maximum_descriptor_distance);
+    readIfPresent(cross_camera, "maximum_l2_descriptor_distance",
+                  &matcher_options->maximum_l2_descriptor_distance);
     readIfPresent(cross_camera, "ratio_test", &matcher_options->ratio_test);
     readIfPresent(cross_camera, "require_mutual_best",
                   &matcher_options->require_mutual_best);
@@ -170,6 +265,8 @@ bool loadCrossCameraOptions(
       descriptor_options->maximum_descriptors == 0U ||
       !std::isfinite(matcher_options->maximum_descriptor_distance) ||
       matcher_options->maximum_descriptor_distance < 0.0 ||
+      !std::isfinite(matcher_options->maximum_l2_descriptor_distance) ||
+      matcher_options->maximum_l2_descriptor_distance < 0.0 ||
       !std::isfinite(matcher_options->ratio_test) ||
       matcher_options->ratio_test <= 0.0 || matcher_options->ratio_test >= 1.0 ||
       !std::isfinite(matcher_options->maximum_epipolar_angle) ||
@@ -308,6 +405,12 @@ bool loadMsckfOptions(const std::string& config_file,
                   &msckf_options->initialization_duration);
     readIfPresent(msckf, "minimum_initialization_samples",
                   &msckf_options->minimum_initialization_samples);
+    readIfPresent(msckf, "stationary_initialization_gate",
+                  &msckf_options->stationary_initialization_gate);
+    readIfPresent(msckf, "maximum_accelerometer_deviation",
+                  &msckf_options->maximum_accelerometer_deviation);
+    readIfPresent(msckf, "maximum_gyroscope_deviation",
+                  &msckf_options->maximum_gyroscope_deviation);
     readIfPresent(msckf, "maximum_clones",
                   &msckf_options->maximum_clones);
     readIfPresent(msckf, "maximum_landmarks",
@@ -358,6 +461,10 @@ bool loadMsckfOptions(const std::string& config_file,
       !std::isfinite(msckf_options->initialization_duration) ||
       msckf_options->initialization_duration <= 0.0 ||
       msckf_options->minimum_initialization_samples < 2U ||
+      !std::isfinite(msckf_options->maximum_accelerometer_deviation) ||
+      msckf_options->maximum_accelerometer_deviation < 0.0 ||
+      !std::isfinite(msckf_options->maximum_gyroscope_deviation) ||
+      msckf_options->maximum_gyroscope_deviation < 0.0 ||
       msckf_options->maximum_clones < 2 ||
       msckf_options->maximum_landmarks < 0 ||
       msckf_options->maximum_feature_observations < 2U ||

@@ -1,5 +1,7 @@
 #include "sphere_vio/frontend/feature_tracker.hpp"
 
+#include "sphere_vio/frontend/omni_rectifier.hpp"
+
 #include <cmath>
 #include <utility>
 
@@ -46,13 +48,15 @@ bool FeatureTracker::track(
     const CameraRig& camera_rig,
     const std::vector<FeatureTrack>& input_tracks,
     std::vector<FeatureTrack>* output_tracks,
-    FeatureTrackingStatistics* statistics) const {
+    FeatureTrackingStatistics* statistics,
+    const OmniRectifier* rectifier) const {
   if (!output_tracks || !statistics) return false;
   output_tracks->clear();
   *statistics = FeatureTrackingStatistics{};
   statistics->input_tracks = input_tracks.size();
 
   const RigCamera* rig_camera = camera_rig.camera(camera_id);
+  const bool rectified_mode = rectifier != nullptr;
   if (!validOptions(options_) || previous_image.empty() ||
       current_image.empty() || previous_image.type() != CV_8UC1 ||
       current_image.type() != CV_8UC1 ||
@@ -60,6 +64,13 @@ bool FeatureTracker::track(
       !std::isfinite(current_timestamp) || !rig_camera ||
       current_image.cols <= 2 * options_.border_margin ||
       current_image.rows <= 2 * options_.border_margin) {
+    return false;
+  }
+  if (rectified_mode &&
+      (previous_image.cols != rectifier->width() ||
+       previous_image.rows != rectifier->height() ||
+       current_image.cols != rectifier->width() ||
+       current_image.rows != rectifier->height())) {
     return false;
   }
   if (input_tracks.empty()) return true;
@@ -72,8 +83,14 @@ bool FeatureTracker::track(
         !track.current.pixel.allFinite()) {
       return false;
     }
-    previous_points.emplace_back(static_cast<float>(track.current.pixel.x()),
-                                 static_cast<float>(track.current.pixel.y()));
+    Eigen::Vector2d previous_pixel = track.current.pixel;
+    if (rectified_mode &&
+        !rectifier->rectifiedPixelFromRaw(camera_id, track.current.pixel,
+                                          &previous_pixel)) {
+      return false;
+    }
+    previous_points.emplace_back(static_cast<float>(previous_pixel.x()),
+                                 static_cast<float>(previous_pixel.y()));
   }
 
   std::vector<cv::Point2f> current_points;
@@ -167,8 +184,18 @@ bool FeatureTracker::track(
     FeatureObservation observation;
     observation.timestamp = current_timestamp;
     observation.camera_id = camera_id;
-    observation.pixel = Eigen::Vector2d(current_points[i].x,
-                                        current_points[i].y);
+    const Eigen::Vector2d rectified_point(current_points[i].x,
+                                          current_points[i].y);
+    Eigen::Vector2d raw_pixel = rectified_point;
+    if (rectified_mode &&
+        !rectifier->rawPixelFromRectified(camera_id, rectified_point,
+                                          &raw_pixel)) {
+      ++statistics->model_domain_rejections;
+      continue;
+    }
+    observation.pixel = raw_pixel;
+    observation.rectified_pixel =
+        rectified_mode ? rectified_point : Eigen::Vector2d::Zero();
     observation.tracking_error = forward_error[i];
     if (!rig_camera->model->unproject(observation.pixel,
                                      &observation.bearing_c) ||

@@ -21,6 +21,19 @@ class CameraModel {
   virtual bool unproject(const Eigen::Vector2d& pixel,
                          Eigen::Vector3d* bearing_c) const = 0;
 
+  // Optional direct bearing <-> pixel paths. They are useful for rectified
+  // virtual cameras whose pixels encode direction explicitly: the default
+  // implementations keep the existing project/unproject behavior.
+  virtual bool projectBearing(const Eigen::Vector3d& bearing_c,
+                              Eigen::Vector2d* pixel) const {
+    // Default: a unit bearing is indistinguishable from a point at depth one.
+    return project(bearing_c, pixel);
+  }
+  virtual bool unprojectToBearing(const Eigen::Vector2d& pixel,
+                                  Eigen::Vector3d* bearing_c) const {
+    return unproject(pixel, bearing_c);
+  }
+
   virtual bool isPixelValid(const Eigen::Vector2d& pixel) const = 0;
   virtual int width() const = 0;
   virtual int height() const = 0;

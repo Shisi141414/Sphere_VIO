@@ -1,0 +1,97 @@
+# SuperPoint CUDA build variant.
+#
+# The standard Dockerfile (CPU-only ROS Noetic image) is intentionally left
+# untouched. This image pins CUDA 11.8 + cuDNN 8 and installs the ONNX Runtime
+# GPU runtime so `pipeline_mode: superpoint_cuda` can run. It is meant to be
+# executed on a machine with an NVIDIA driver and `--gpus all`:
+#
+#   docker build -f docker/Dockerfile.cuda -t sphere_vio:cuda .
+#   docker run --gpus all --rm -v "$PWD:/repo" sphere_vio:cuda bash
+#
+# CUDA_VERSION and ONNXRUNTIME_VERSION must stay ABI-compatible: ONNX Runtime
+# 1.16.x is built against CUDA 11.8 / cuDNN 8.9, hence the defaults below.
+ARG CUDA_TAG=11.8.0-cudnn8-devel-ubuntu20.04
+FROM nvidia/cuda:${CUDA_TAG}
+
+ARG ONNXRUNTIME_VERSION=1.16.3
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CATKIN_WS=/root/catkin_ws
+
+# Toolchain + the same system dependencies as the standard image, plus curl /
+# python3-pip used only to fetch and unpack ONNX Runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    ca-certificates \
+    curl \
+    gnupg2 \
+    lsb-release \
+    python3-pip \
+    libeigen3-dev \
+    libopencv-dev \
+    libyaml-cpp-dev \
+    libgtk-3-0 \
+    libgl1 \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libxkbcommon-x11-0 \
+    xauth \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add the ROS Noetic apt repository on top of the CUDA base image (the
+# nvidia/cuda image does not include ROS).
+RUN sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" \
+      > /etc/apt/sources.list.d/ros-latest.list' \
+    && curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+      | apt-key add - \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      ros-noetic-catkin \
+      ros-noetic-cv-bridge \
+      ros-noetic-image-transport \
+      ros-noetic-message-filters \
+      ros-noetic-rosbag \
+      ros-noetic-tf2 \
+      ros-noetic-tf2-ros \
+    && rm -rf /var/lib/apt/lists/*
+
+# The GPU wheel ships libonnxruntime.so plus the CUDA provider, but no C++
+# headers. Fetch the matching source tag and keep only its public headers, then
+# symlink the wheel libraries into a stable /usr/local/onnxruntime prefix that
+# CMake can find via -DONNXRUNTIME_DIR.
+RUN python3 -m pip install --no-cache-dir \
+      onnxruntime-gpu==${ONNXRUNTIME_VERSION} \
+    && curl -fsSL \
+      https://github.com/microsoft/onnxruntime/archive/refs/tags/v${ONNXRUNTIME_VERSION}.tar.gz \
+      -o /tmp/onnxruntime.tar.gz \
+    && mkdir -p /tmp/onnxruntime-src \
+    && tar -xzf /tmp/onnxruntime.tar.gz -C /tmp/onnxruntime-src --strip-components=1 \
+    && cp -r /tmp/onnxruntime-src/include/onnxruntime /usr/local/include/ \
+    && mkdir -p /usr/local/onnxruntime/lib \
+    && ln -s /usr/local/lib/python3.8/dist-packages/onnxruntime/capi/libonnxruntime.so* \
+         /usr/local/onnxruntime/lib/ \
+    && rm -rf /tmp/onnxruntime.tar.gz /tmp/onnxruntime-src
+
+WORKDIR ${CATKIN_WS}
+RUN mkdir -p src
+COPY . src/sphere_vio
+
+# Build only this package, now with the ONNX Runtime CUDA provider enabled.
+RUN /bin/bash -c "source /opt/ros/noetic/setup.bash && \
+    catkin_make -DCATKIN_WHITELIST_PACKAGES=\"sphere_vio\" \
+      -DSPHERE_VIO_WITH_ONNXRUNTIME_CUDA=ON \
+      -DONNXRUNTIME_DIR=/usr/local/onnxruntime"
+
+# At runtime ONNX Runtime dlopens its CUDA/cuDNN provider from this directory.
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.8/dist-packages/onnxruntime/capi:${LD_LIBRARY_PATH}
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+WORKDIR ${CATKIN_WS}
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

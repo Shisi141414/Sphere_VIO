@@ -370,5 +370,52 @@ TEST(CrossCameraMatcherTest, ConfiguredPairBatchOrderIsDeterministic) {
   }
 }
 
+cv::Mat makeFloatDescriptors(
+    const std::vector<std::vector<float>>& rows) {
+  cv::Mat descriptors(static_cast<int>(rows.size()),
+                      static_cast<int>(rows.front().size()), CV_32FC1);
+  for (std::size_t row = 0U; row < rows.size(); ++row) {
+    for (std::size_t column = 0U; column < rows[row].size(); ++column) {
+      descriptors.at<float>(static_cast<int>(row),
+                            static_cast<int>(column)) = rows[row][column];
+    }
+  }
+  return descriptors;
+}
+
+TEST(CrossCameraMatcherTest, L2DescriptorsMatchWithL2DistanceGate) {
+  const std::vector<std::vector<float>> rows{
+      {1.0F, 0.0F, 0.0F, 0.0F},
+      {0.0F, 1.0F, 0.0F, 0.0F}};
+  const cv::Mat descriptors = makeFloatDescriptors(rows);
+  CameraDescriptorSet first = makeSet(0U, {10U, 11U}, descriptors);
+  CameraDescriptorSet second = makeSet(1U, {20U, 21U}, descriptors);
+  first.descriptor_format = DescriptorFormat::kL2;
+  second.descriptor_format = DescriptorFormat::kL2;
+
+  CrossCameraMatcherOptions options = logicOptions();
+  options.maximum_descriptor_distance = 64.0;
+  options.maximum_l2_descriptor_distance = 2.0;
+  CrossCameraMatcher matcher(options);
+  CrossCameraPairResult result;
+  ASSERT_TRUE(matcher.matchPair(first, second, frontend_test::makeRig(),
+                                &result));
+  EXPECT_EQ(2U, result.matches.size());
+  EXPECT_DOUBLE_EQ(0.0, result.matches[0].descriptor_distance);
+}
+
+TEST(CrossCameraMatcherTest, MixedDescriptorFormatsAreRejected) {
+  const cv::Mat descriptors =
+      makeDescriptors({filled(0x00U), filled(0xFFU)});
+  CameraDescriptorSet first = makeSet(0U, {10U, 11U}, descriptors);
+  CameraDescriptorSet second = makeSet(1U, {20U, 21U}, descriptors);
+  second.descriptor_format = DescriptorFormat::kL2;
+
+  CrossCameraMatcher matcher(logicOptions());
+  CrossCameraPairResult result;
+  EXPECT_FALSE(matcher.matchPair(first, second, frontend_test::makeRig(),
+                                 &result));
+}
+
 }  // namespace
 }  // namespace sphere_vio

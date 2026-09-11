@@ -25,6 +25,8 @@ std::pair<CameraId, CameraId> canonicalPair(CameraId first,
 bool validOptions(const CrossCameraMatcherOptions& options) {
   if (!std::isfinite(options.maximum_descriptor_distance) ||
       options.maximum_descriptor_distance < 0.0 ||
+      !std::isfinite(options.maximum_l2_descriptor_distance) ||
+      options.maximum_l2_descriptor_distance < 0.0 ||
       !std::isfinite(options.ratio_test) || options.ratio_test <= 0.0 ||
       options.ratio_test >= 1.0 ||
       !std::isfinite(options.maximum_epipolar_angle) ||
@@ -44,14 +46,20 @@ bool validOptions(const CrossCameraMatcherOptions& options) {
 
 bool validDescriptorSet(const CameraDescriptorSet& set) {
   const std::size_t size = set.feature_ids.size();
+  const bool binary =
+      set.descriptor_format == DescriptorFormat::kHamming;
+  const bool floating =
+      set.descriptor_format == DescriptorFormat::kL2;
   if (set.camera_id >= 4U || !std::isfinite(set.timestamp) ||
       set.pixels.size() != size || set.bearings_c.size() != size ||
-      set.bearings_b.size() != size) {
+      set.bearings_b.size() != size || (!binary && !floating)) {
     return false;
   }
   if (size == 0U) return set.descriptors.empty();
-  if (set.descriptors.type() != CV_8UC1 ||
-      set.descriptors.cols != kOrbDescriptorBytes ||
+  if ((binary && set.descriptors.type() != CV_8UC1) ||
+      (floating && set.descriptors.type() != CV_32FC1) ||
+      (binary && set.descriptors.cols != kOrbDescriptorBytes) ||
+      (floating && set.descriptors.cols <= 0) ||
       set.descriptors.rows != static_cast<int>(size)) {
     return false;
   }
@@ -76,12 +84,20 @@ struct DirectionalCandidate {
 
 std::vector<DirectionalCandidate> evaluateDirectionalCandidates(
     const cv::Mat& queries, const cv::Mat& trains,
-    const CrossCameraMatcherOptions& options) {
+    const CrossCameraMatcherOptions& options,
+    DescriptorFormat descriptor_format) {
   std::vector<DirectionalCandidate> candidates(
       static_cast<std::size_t>(queries.rows));
   if (queries.empty() || trains.empty()) return candidates;
+  const int norm_type = descriptor_format == DescriptorFormat::kHamming
+                            ? cv::NORM_HAMMING
+                            : cv::NORM_L2;
+  const double distance_threshold =
+      descriptor_format == DescriptorFormat::kHamming
+          ? options.maximum_descriptor_distance
+          : options.maximum_l2_descriptor_distance;
   std::vector<std::vector<cv::DMatch>> knn_matches;
-  cv::BFMatcher matcher(cv::NORM_HAMMING, false);
+  cv::BFMatcher matcher(norm_type, false);
   matcher.knnMatch(queries, trains, knn_matches, 2);
   for (std::size_t query_index = 0U;
        query_index < candidates.size() && query_index < knn_matches.size();
@@ -101,7 +117,7 @@ std::vector<DirectionalCandidate> evaluateDirectionalCandidates(
     candidate.best_distance = best.distance;
     candidate.absolute_pass =
         std::isfinite(candidate.best_distance) &&
-        candidate.best_distance <= options.maximum_descriptor_distance;
+        candidate.best_distance <= distance_threshold;
     if (knn_matches[query_index].size() < 2U) continue;
     const double second_distance = knn_matches[query_index][1].distance;
     if (!std::isfinite(second_distance) || second_distance <= 0.0) continue;
@@ -148,6 +164,7 @@ bool CrossCameraMatcher::matchPair(
       !validDescriptorSet(second_set) ||
       first_set.camera_id == second_set.camera_id ||
       first_set.timestamp != second_set.timestamp ||
+      first_set.descriptor_format != second_set.descriptor_format ||
       !isConfiguredPair(first_set.camera_id, second_set.camera_id)) {
     return false;
   }
@@ -170,10 +187,12 @@ bool CrossCameraMatcher::matchPair(
 
   const std::vector<DirectionalCandidate> forward =
       evaluateDirectionalCandidates(descriptors_1->descriptors,
-                                    descriptors_2->descriptors, options_);
+                                    descriptors_2->descriptors, options_,
+                                    descriptors_1->descriptor_format);
   const std::vector<DirectionalCandidate> backward =
       evaluateDirectionalCandidates(descriptors_2->descriptors,
-                                    descriptors_1->descriptors, options_);
+                                    descriptors_1->descriptors, options_,
+                                    descriptors_2->descriptor_format);
   RelativePose relative_pose;
   const RigCamera* camera_1 = camera_rig.camera(result->camera_id_1);
   const RigCamera* camera_2 = camera_rig.camera(result->camera_id_2);

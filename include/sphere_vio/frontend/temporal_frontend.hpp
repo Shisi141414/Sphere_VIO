@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -14,10 +15,15 @@
 
 namespace sphere_vio {
 
+class OmniRectifier;
+
 struct TemporalFrontendOptions {
   FeatureDetectorOptions detector;
   FeatureTrackerOptions tracker;
   double redetection_ratio = 0.75;
+  // Mirrors the YAML `frontend.pipeline_mode` key. Allowed values are
+  // "legacy_per_camera", "rectified", and "superpoint_cuda".
+  std::string pipeline_mode = "legacy_per_camera";
 };
 
 struct CameraTrackingResult {
@@ -55,6 +61,7 @@ class TemporalFrontend {
 
   void setMaximumFeaturesPerCamera(std::size_t maximum_features);
   void setPyramidLevels(int pyramid_levels);
+  void setRectifier(const OmniRectifier* rectifier);
 
   // Resetting state does not reuse FeatureIds during this object's lifetime.
   void reset();
@@ -72,6 +79,7 @@ class TemporalFrontend {
   TemporalFrontendOptions options_;
   FeatureDetector detector_;
   FeatureTracker tracker_;
+  const OmniRectifier* rectifier_ = nullptr;
   std::array<CameraTrackingState, 4> states_;
   FeatureId next_feature_id_ = 1U;
 };

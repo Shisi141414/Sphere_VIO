@@ -13,7 +13,12 @@ namespace sphere_vio {
 
 struct CrossCameraMatcherOptions {
   std::vector<std::pair<CameraId, CameraId>> camera_pairs;
+  // Hamming threshold for binary ORB descriptors.
   double maximum_descriptor_distance = 64.0;
+  // L2 threshold for unit float descriptors (SuperPoint). Two is the
+  // theoretical maximum for unit vectors; the effective gate remains ratio,
+  // mutual best, and epipolar error.
+  double maximum_l2_descriptor_distance = 2.0;
   double ratio_test = 0.80;
   bool require_mutual_best = true;
   double maximum_epipolar_angle = 0.003;

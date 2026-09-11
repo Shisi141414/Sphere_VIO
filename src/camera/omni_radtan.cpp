@@ -124,6 +124,50 @@ bool OmniRadtan::unproject(const Eigen::Vector2d& pixel,
   return true;
 }
 
+bool OmniRadtan::projectBearing(const Eigen::Vector3d& bearing_c,
+                                Eigen::Vector2d* pixel) const {
+  if (!pixel || !bearing_c.allFinite()) return false;
+  const double norm = bearing_c.norm();
+  if (!std::isfinite(norm) || norm <= kMinimumVectorNorm) return false;
+  // Keep the standard omni visibility half-space. For the rectified virtual
+  // view this only means the extreme corners of the 200x100 degree canvas
+  // fall in the mask instead of being mirrored.
+  const Eigen::Vector3d bearing = bearing_c / norm;
+  if (!isVisible(bearing)) return false;
+
+  // Match project(point): normalized coordinates are x / (z + xi * |p|).
+  // For a unit bearing |p| = 1, so the denominator is z + xi.
+  const double denominator = bearing.z() + parameters_.xi;
+  if (!std::isfinite(denominator) ||
+      denominator <= kDenominatorEpsilon) {
+    return false;
+  }
+  Eigen::Vector2d distorted;
+  if (!distort(Eigen::Vector2d(bearing.x() / denominator,
+                               bearing.y() / denominator),
+               &distorted)) {
+    return false;
+  }
+
+  Eigen::Vector2d projected_pixel(
+      parameters_.fx * distorted.x() + parameters_.cx,
+      parameters_.fy * distorted.y() + parameters_.cy);
+  projected_pixel.x() = clampNearImageBoundary(
+      projected_pixel.x(), static_cast<double>(parameters_.width));
+  projected_pixel.y() = clampNearImageBoundary(
+      projected_pixel.y(), static_cast<double>(parameters_.height));
+  if (!isPixelValid(projected_pixel)) return false;
+  *pixel = projected_pixel;
+  return true;
+}
+
+bool OmniRadtan::unprojectToBearing(const Eigen::Vector2d& pixel,
+                                    Eigen::Vector3d* bearing_c) const {
+  // The omni model already returns a unit direction from unproject(), so the
+  // direct bearing path is identical to the generic path.
+  return unproject(pixel, bearing_c);
+}
+
 bool OmniRadtan::isPixelValid(const Eigen::Vector2d& pixel) const {
   return pixel.allFinite() && pixel.x() >= 0.0 && pixel.y() >= 0.0 &&
          pixel.x() < static_cast<double>(parameters_.width) &&

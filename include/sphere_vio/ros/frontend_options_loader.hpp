@@ -6,14 +6,23 @@
 #include "sphere_vio/ros/offline_feature_runner.hpp"
 #include "sphere_vio/frontend/cross_camera_matcher.hpp"
 #include "sphere_vio/frontend/landmark_track_manager.hpp"
+#include "sphere_vio/frontend/superpoint_extractor.hpp"
 #include "sphere_vio/frontend/temporal_frontend.hpp"
 #include "sphere_vio/frontend/triangulation_candidate_evaluator.hpp"
 
 namespace sphere_vio {
 
+bool loadSynchronizationOptions(const std::string& config_file,
+                                OfflineFeatureRunnerOptions* options,
+                                std::string* error);
+
 bool loadTemporalFrontendOptions(const std::string& config_file,
                                  TemporalFrontendOptions* options,
                                  std::string* error);
+
+bool loadSuperPointOptions(const std::string& config_file,
+                           SuperPointExtractorOptions* options,
+                           std::string* error);
 
 bool loadCrossCameraOptions(const std::string& config_file,
                             OrbDescriptorExtractorOptions* descriptor_options,

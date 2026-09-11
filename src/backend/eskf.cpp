@@ -62,23 +62,24 @@ bool Eskf::propagate(const std::vector<ImuMeasurement>& measurements,
     return initialized_;
   }
 
-  // Extrapolate from the current state time to the first sample when needed.
-  if (measurements.front().timestamp > state_.timestamp) {
-    propagateSegment(measurements.front(), measurements.front());
-  }
-
   for (std::size_t index = 0; index + 1U < measurements.size(); ++index) {
-    if (measurements[index + 1U].timestamp <= state_.timestamp) continue;
-    if (measurements[index].timestamp >= end_time) break;
-    propagateSegment(measurements[index], measurements[index + 1U]);
+    const ImuMeasurement& minus = measurements[index];
+    const ImuMeasurement& plus = measurements[index + 1U];
+    if (plus.timestamp <= state_.timestamp) continue;
+    if (minus.timestamp >= end_time) break;
+    propagateSegment(minus, plus);
+    if (state_.timestamp >= end_time) break;
   }
 
-  // Extrapolate the last sample to the requested image timestamp.
+  // Finish any remaining partial interval up to the requested image
+  // timestamp with the last known IMU values.
   if (state_.timestamp < end_time) {
-    propagateSegment(measurements.back(), measurements.back());
+    const ImuMeasurement& minus = measurements.back();
+    ImuMeasurement plus = minus;
+    plus.timestamp = end_time;
+    propagateSegment(minus, plus);
   }
 
-  state_.timestamp = end_time;
   return isFinite(state_.q_wb) && isFinite(state_.p_wb) &&
          isFinite(state_.v_wb) && covariance_.allFinite();
 }
@@ -113,7 +114,16 @@ bool Eskf::updatePosition(const Eigen::Vector3d& measured_world,
 
   const Eigen::Matrix<double, 15, 15> identity =
       Eigen::Matrix<double, 15, 15>::Identity();
-  covariance_ = (identity - gain * jacobian) * covariance_;
+  // Joseph-form update keeps the result symmetric positive semi-definite
+  // even for compressed or partially corrected linearizations.
+  const Eigen::Matrix<double, 15, 15> closed_loop =
+      identity - gain * jacobian;
+  covariance_ =
+      closed_loop * covariance_ * closed_loop.transpose() +
+      gain *
+          (measurement_noise * measurement_noise *
+           Eigen::Matrix3d::Identity()) *
+          gain.transpose();
   covariance_ = 0.5 * (covariance_ + covariance_.transpose());
   return covariance_.allFinite();
 }
@@ -143,7 +153,16 @@ bool Eskf::updateVelocity(const Eigen::Vector3d& measured_velocity,
 
   const Eigen::Matrix<double, 15, 15> identity =
       Eigen::Matrix<double, 15, 15>::Identity();
-  covariance_ = (identity - gain * jacobian) * covariance_;
+  // Joseph-form update keeps the result symmetric positive semi-definite
+  // even for compressed or partially corrected linearizations.
+  const Eigen::Matrix<double, 15, 15> closed_loop =
+      identity - gain * jacobian;
+  covariance_ =
+      closed_loop * covariance_ * closed_loop.transpose() +
+      gain *
+          (measurement_noise * measurement_noise *
+           Eigen::Matrix3d::Identity()) *
+          gain.transpose();
   covariance_ = 0.5 * (covariance_ + covariance_.transpose());
   return covariance_.allFinite();
 }

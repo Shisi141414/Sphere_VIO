@@ -9,6 +9,15 @@ synchronization:
   image_queue_size: 10
   maximum_image_time_difference: 0.003
   imu_queue_size: 2000
+  # Authoritative D2SLAM clock calibration: t_imu = t_camera + td.
+  # This value comes from config/d2slam/quadcam_single.yaml (td: -0.186) and
+  # is applied verbatim; the former +-25 ms online search is disabled.
+  camera_to_imu_offset_s: -0.186
+
+# Offline trajectory writing. Poses are interpolated at this camera-clock
+# period after initialization so the evaluator never sees multi-second gaps.
+offline:
+  output_period: 0.05
 
 inspection:
   report_period: 5.0
@@ -62,10 +71,33 @@ frontend:
     maximum_descriptors: 250
 
     maximum_descriptor_distance: 64
+    maximum_l2_descriptor_distance: 2.0
     ratio_test: 0.80
     require_mutual_best: true
     maximum_epipolar_angle: 0.003
     maximum_matches_per_pair: 100
+
+  # SuperPoint CUDA frontend (pipeline_mode: superpoint_cuda). This section is
+  # optional for legacy_per_camera/rectified modes, but required when the
+  # pipeline_mode is superpoint_cuda. The model path is resolved relative to
+  # the process working directory unless an absolute path is given.
+  superpoint:
+    # D2SLAM-compatible simplified SuperPoint: input "input", outputs
+    # "scores"/"descriptors". This file is not shipped with the repository and
+    # must be provided before running superpoint_cuda.
+    model_path: "models/superpoint_v1_sim_int32.onnx"
+    input_width: 320
+    input_height: 160
+    output_width: 800
+    output_height: 400
+    score_threshold: 0.15
+    nms_radius: 20
+    maximum_points_per_camera: 150
+    grid_rows: 4
+    grid_columns: 6
+    # Reserved: superpoint_cuda always requires the CUDA provider and fails
+    # loudly when it is unavailable, rather than silently running on CPU.
+    require_cuda: true
 
   # Phase 4C admission gates for current-frame triangulation diagnostics.
   # These do not create landmarks or write depth into temporal tracks.
@@ -126,6 +158,11 @@ backend:
     extrinsic_translation_perturbation: [0.0, 0.0, 0.0]
     initialization_duration: 1.0
     minimum_initialization_samples: 20
+    # Reject initialization windows with meaningful body motion. This avoids
+    # mixing gravity with acceleration when the run starts mid-maneuver.
+    stationary_initialization_gate: true
+    maximum_accelerometer_deviation: 0.15
+    maximum_gyroscope_deviation: 0.01
     maximum_clones: 20
     maximum_landmarks: 0
     maximum_feature_observations: 40

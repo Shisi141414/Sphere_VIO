@@ -12,7 +12,13 @@ namespace sphere_vio {
 struct FeatureObservation {
   Timestamp timestamp = 0.0;
   CameraId camera_id = 0U;
+  // Original fisheye pixel. All geometric consumers (bearings, epipolar
+  // geometry, triangulation, MSCKF) use this coordinate.
   Eigen::Vector2d pixel = Eigen::Vector2d::Zero();
+  // Pixel in the 200x100 degree rectified canvas when rectified frontend mode
+  // is enabled. It is used only for detection/LK association, never for
+  // geometry. Zero means "not available" in legacy raw-image mode.
+  Eigen::Vector2d rectified_pixel = Eigen::Vector2d::Zero();
   Eigen::Vector3d bearing_c = Eigen::Vector3d::Zero();
   Eigen::Vector3d bearing_b = Eigen::Vector3d::Zero();
   double tracking_error = 0.0;

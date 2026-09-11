@@ -11,6 +11,8 @@
 
 namespace sphere_vio {
 
+class OmniRectifier;
+
 struct FeatureDetectorOptions {
   std::size_t maximum_features = 250U;
   int grid_rows = 6;
@@ -33,7 +35,8 @@ class FeatureDetector {
               const std::vector<Eigen::Vector2d>& occupied_pixels,
               std::size_t maximum_new_features,
               std::vector<FeatureObservation>* observations,
-              FeatureDetectionStatistics* statistics) const;
+              FeatureDetectionStatistics* statistics,
+              const OmniRectifier* rectifier = nullptr) const;
 
  private:
   FeatureDetectorOptions options_;

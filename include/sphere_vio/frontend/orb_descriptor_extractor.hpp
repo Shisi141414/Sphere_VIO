@@ -11,6 +11,11 @@
 
 namespace sphere_vio {
 
+enum class DescriptorFormat {
+  kHamming = 0,
+  kL2,
+};
+
 struct OrbDescriptorExtractorOptions {
   int patch_size = 31;
   int edge_threshold = 31;
@@ -34,6 +39,10 @@ struct DescriptorExtractionStatistics {
 struct CameraDescriptorSet {
   CameraId camera_id = 0U;
   Timestamp timestamp = 0.0;
+  // Binary ORB descriptors are CV_8UC1/Hamming; float SuperPoint descriptors
+  // are CV_32FC1/L2. The matcher rejects mixed sets instead of silently
+  // treating float bytes as binary words.
+  DescriptorFormat descriptor_format = DescriptorFormat::kHamming;
   std::vector<FeatureId> feature_ids;
   std::vector<Eigen::Vector2d> pixels;
   std::vector<Eigen::Vector3d> bearings_c;

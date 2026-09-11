@@ -26,6 +26,10 @@ class OmniRadtan final : public CameraModel {
                Eigen::Vector2d* pixel) const override;
   bool unproject(const Eigen::Vector2d& pixel,
                  Eigen::Vector3d* bearing_c) const override;
+  bool projectBearing(const Eigen::Vector3d& bearing_c,
+                      Eigen::Vector2d* pixel) const override;
+  bool unprojectToBearing(const Eigen::Vector2d& pixel,
+                          Eigen::Vector3d* bearing_c) const override;
   bool isPixelValid(const Eigen::Vector2d& pixel) const override;
   int width() const override;
   int height() const override;

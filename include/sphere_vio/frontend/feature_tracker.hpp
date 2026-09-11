@@ -9,6 +9,8 @@
 
 namespace sphere_vio {
 
+class OmniRectifier;
+
 struct FeatureTrackerOptions {
   cv::Size window_size = cv::Size(21, 21);
   int pyramid_levels = 4;
@@ -31,7 +33,8 @@ class FeatureTracker {
              const CameraRig& camera_rig,
              const std::vector<FeatureTrack>& input_tracks,
              std::vector<FeatureTrack>* output_tracks,
-             FeatureTrackingStatistics* statistics) const;
+             FeatureTrackingStatistics* statistics,
+             const OmniRectifier* rectifier = nullptr) const;
 
  private:
   FeatureTrackerOptions options_;

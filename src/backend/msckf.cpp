@@ -161,9 +161,87 @@ std::vector<TemporalFeatureKey> MsckfFeatureAccumulator::keys() const {
   return result;
 }
 
+std::vector<MsckfFeature> MsckfFeatureAccumulator::drainInactive(
+    std::uint64_t current_frame_index,
+    std::uint64_t maximum_frames_without_observation) {
+  std::vector<MsckfFeature> drained;
+  // Collect keys first, then erase, so iterator invalidation cannot skip a
+  // track while iterating the map in place.
+  std::vector<TemporalFeatureKey> inactive_keys;
+  for (const auto& entry : tracks_) {
+    const TrackState& track = entry.second;
+    const bool inactive =
+        track.last_frame_index <= current_frame_index &&
+        current_frame_index - track.last_frame_index >
+            maximum_frames_without_observation;
+    if (inactive) inactive_keys.push_back(entry.first);
+  }
+  for (const TemporalFeatureKey& key : inactive_keys) {
+    const auto found = tracks_.find(key);
+    if (found == tracks_.end()) continue;
+    // A track with one observation has no baseline and is useless to MSCKF;
+    // it is still removed so it cannot be replayed later.
+    if (found->second.observations.size() >= 2U) {
+      MsckfFeature feature;
+      feature.id = key.feature_id;
+      feature.persistent_id = key.feature_id;
+      feature.observations = found->second.observations;
+      drained.push_back(std::move(feature));
+    }
+    tracks_.erase(found);
+  }
+  return drained;
+}
+
+std::vector<MsckfFeature> MsckfFeatureAccumulator::segmentBefore(
+    Timestamp marginalization_time) {
+  std::vector<MsckfFeature> drained;
+  if (!std::isfinite(marginalization_time)) return drained;
+
+  for (auto entry = tracks_.begin(); entry != tracks_.end();) {
+    TrackState& track = entry->second;
+    std::vector<MsckfObservation> oldest_segment;
+    std::vector<MsckfObservation> retained;
+    for (const MsckfObservation& observation : track.observations) {
+      if (observation.timestamp <= marginalization_time) {
+        oldest_segment.push_back(observation);
+      } else {
+        retained.push_back(observation);
+      }
+    }
+    if (oldest_segment.size() >= 2U) {
+      MsckfFeature feature;
+      feature.id = entry->first.feature_id;
+      feature.persistent_id = entry->first.feature_id;
+      feature.observations = std::move(oldest_segment);
+      drained.push_back(std::move(feature));
+    }
+    if (retained.empty()) {
+      // The whole track was consumed (or had too few observations to be
+      // usable). Either way it must not be replayed again.
+      entry = tracks_.erase(entry);
+    } else {
+      track.observations = std::move(retained);
+      ++entry;
+    }
+  }
+  return drained;
+}
+
 Msckf::Msckf(MsckfOptions options) : options_(std::move(options)) {
   options_.gravity =
       Eigen::Vector3d(0.0, 0.0, -options_.gravity_magnitude);
+}
+
+Timestamp Msckf::oldestCloneTimestamp() const {
+  if (clones_.empty()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return clones_.begin()->first;
+}
+
+bool Msckf::marginalizationPending() const {
+  return static_cast<int>(clones_.size()) > options_.maximum_clones;
 }
 
 bool Msckf::initialize(const ImuMeasurement& measurement) {
@@ -211,9 +289,33 @@ bool Msckf::initializeStatic(Timestamp end_time) {
   mean_acceleration /= count;
   mean_angular_velocity /= count;
 
+  // Optional stationarity gate. A moving initialization window lets gravity
+  // and body acceleration mix together; the recovered yaw/g world alignment
+  // then has a large persistent error. Reject such windows before any state
+  // is created and clear the buffer so a clean future window can be tried.
+  if (options_.stationary_initialization_gate) {
+    double acceleration_variance = 0.0;
+    double gyroscope_variance = 0.0;
+    for (const ImuMeasurement& measurement : initialization_buffer_) {
+      acceleration_variance +=
+          (measurement.acceleration - mean_acceleration).squaredNorm();
+      gyroscope_variance +=
+          (measurement.angular_velocity - mean_angular_velocity).squaredNorm();
+    }
+    const double acceleration_deviation =
+        std::sqrt(acceleration_variance / count);
+    const double gyroscope_deviation = std::sqrt(gyroscope_variance / count);
+    if (acceleration_deviation > options_.maximum_accelerometer_deviation ||
+        gyroscope_deviation > options_.maximum_gyroscope_deviation) {
+      initialization_buffer_.clear();
+      return false;
+    }
+  }
+
   const double gravity_norm = mean_acceleration.norm();
   if (!std::isfinite(gravity_norm) ||
       gravity_norm < 0.5 * options_.gravity_magnitude) {
+    initialization_buffer_.clear();
     return false;
   }
 
@@ -242,19 +344,31 @@ bool Msckf::propagate(const std::vector<ImuMeasurement>& measurements,
     return initialized_;
   }
 
-  if (measurements.front().timestamp > state_.timestamp) {
-    propagateSegment(measurements.front(), measurements.front());
-  }
-  for (std::size_t index = 0; index + 1U < measurements.size(); ++index) {
-    if (measurements[index + 1U].timestamp <= state_.timestamp) continue;
-    if (measurements[index].timestamp >= end_time) break;
-    propagateSegment(measurements[index], measurements[index + 1U]);
-  }
-  if (state_.timestamp < end_time) {
-    propagateSegment(measurements.back(), measurements.back());
+  // The buffer supplies an interpolated left boundary at the current filter
+  // time and an interpolated (or held) right boundary at the image time, so
+  // consecutive-pair integration below covers the full interval. The loop
+  // deliberately skips pairs that do not advance the filter clock rather than
+  // replaying a segment that was already integrated.
+  for (std::size_t index = 0U; index + 1U < measurements.size(); ++index) {
+    const ImuMeasurement& minus = measurements[index];
+    const ImuMeasurement& plus = measurements[index + 1U];
+    if (plus.timestamp <= state_.timestamp) continue;
+    if (minus.timestamp >= end_time) break;
+    propagateSegment(minus, plus);
+    if (state_.timestamp >= end_time) break;
   }
 
-  state_.timestamp = end_time;
+  // If no supplied sample reaches the requested image time (for example a
+  // very short image gap or a buffered hold), finish the partial segment with
+  // the last known values. This preserves strict timestamp monotonicity
+  // instead of blindly assigning state_.timestamp = end_time.
+  if (state_.timestamp < end_time) {
+    const ImuMeasurement& minus = measurements.back();
+    ImuMeasurement plus = minus;
+    plus.timestamp = end_time;
+    propagateSegment(minus, plus);
+  }
+
   return finiteQuaternion(state_.q_wb) && finiteVector(state_.p_wb) &&
          finiteVector(state_.v_wb) && covariance_.allFinite();
 }
@@ -309,26 +423,9 @@ bool Msckf::update(const std::vector<MsckfFeature>& features,
                    const CameraRig& camera_rig) {
   if (!initialized_ || clones_.size() < 2U) return false;
 
+  int state_size = static_cast<int>(covariance_.rows());
   std::vector<Eigen::MatrixXd> projected_H;
   std::vector<Eigen::VectorXd> projected_residual;
-  int state_size = static_cast<int>(covariance_.rows());
-
-  for (const MsckfFeature& feature : features) {
-    if (feature.persistent_id == 0U ||
-        feature.observations.size() < 3U ||
-        landmark_indices_.count(feature.persistent_id) != 0U ||
-        static_cast<int>(landmark_positions_.size()) >=
-            options_.maximum_landmarks) {
-      continue;
-    }
-    Eigen::Vector3d point_w;
-    std::vector<FeatureMeasurement> measurements;
-    if (buildFeatureMeasurements(feature, camera_rig, &point_w,
-                                 &measurements)) {
-      augmentLandmark(feature.persistent_id, point_w);
-    }
-  }
-  state_size = static_cast<int>(covariance_.rows());
 
   for (const MsckfFeature& feature : features) {
     Eigen::Vector3d point_w;
@@ -469,9 +566,20 @@ bool Msckf::update(const std::vector<MsckfFeature>& features,
   const Eigen::VectorXd correction = gain * residual_compressed;
   if (!applyErrorState(correction)) return false;
 
+  // Joseph-form covariance update. Unlike the short form
+  //   P = (I - K H) P,
+  // the Joseph form
+  //   P = (I - K H) P (I - K H)^T + K R K^T
+  // is symmetric and positive semi-definite even when the gain is only
+  // approximately optimal or the state was partially corrected. With
+  // compressed linearizations this keeps long runs from slowly losing
+  // positive-definiteness and then rejecting every update.
   const Eigen::MatrixXd identity =
       Eigen::MatrixXd::Identity(state_size, state_size);
-  covariance_ = (identity - gain * H_compressed) * covariance_;
+  const Eigen::MatrixXd closed_loop = identity - gain * H_compressed;
+  covariance_ =
+      closed_loop * covariance_ * closed_loop.transpose() +
+      gain * measurement_noise * gain.transpose();
   covariance_ = 0.5 * (covariance_ + covariance_.transpose());
   return covariance_.allFinite();
 }

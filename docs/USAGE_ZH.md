@@ -357,6 +357,17 @@ rosrun sphere_vio sphere_vio_feature_runner \
 会在每个同步图像帧增广 pose clone、用 `OmniRadtan` 球面投影构造视觉残差，并在
 超过窗口长度后边缘化最旧 clone。实现说明见 `docs/MSCKF_ZH.md`。
 
+**时间轴约定**：`system.yaml` 的 `synchronization.camera_to_imu_offset_s` 采用
+D2SLAM 权威标定值 `-0.186`（即 `t_imu = t_camera - 0.186 s`）。IMU 区间提取、
+MSCKF 传播、clone 与观测关联都换算到 IMU 时钟；`trajectory.csv` 仍用原始相机
+时间戳输出，以保证与 groundtruth 对齐。旧的 ±25 ms 在线时间偏移/外参搜索已禁用。
+
+**前端模式**：`frontend.pipeline_mode` 可选 `legacy_per_camera`（默认，原始鱼眼
+图 FAST+LK）、`rectified`（200°×100°、800×400 局部球面校正图上检测跟踪，几何
+仍用原始鱼眼像素）与 `superpoint_cuda`（SuperPoint 批推理替代 ORB 描述子，需
+ONNX Runtime CUDA 构建与 D2SLAM 兼容 ONNX 模型，见 `README.md`）。`rectified`
+与 `superpoint_cuda` 之外不改变 MSCKF 的后端接口。
+
 ## 8. 重点指标及含义
 
 ### 8.1 数据完整性与同步（bag runner）

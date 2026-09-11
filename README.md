@@ -12,8 +12,12 @@ ROS 1 Noetic / Ubuntu 20.04，主要后端是滑动窗口 MSCKF。
 - 当前帧两视图三角化候选与 LandmarkTrack 关联。
 - IMU 初始化：重力方向、陀螺零偏、加速度计零偏估计。
 - 滑窗 MSCKF：clone 增广、边缘化、特征零空间投影更新。
-- 持久 landmark 协方差状态。
-- 相机/IMU 时间偏移与外参扰动的在线估计。
+- 静止初始化门控，防止启动阶段把加速度混进重力估计。
+- 固定 D2SLAM 相机/IMU 时间基准：`t_imu = t_camera - 0.186 s`。
+- `legacy_per_camera` / `rectified` 两种 FAST+LK 前端模式；校正模式在 200°×100°
+  局部球面图上检测跟踪，几何仍使用原始鱼眼像素。
+- 可选 `superpoint_cuda` 前端：ONNX Runtime CUDA 上的 SuperPoint 检测与浮点
+  描述子（需要自行提供 D2SLAM 兼容 ONNX 模型，缺失时明确报错、绝不静默降级）。
 - `trajectory.csv` 规范轨迹输出与评测脚本。
 
 ## 目录结构
@@ -44,6 +48,45 @@ result/       全量评测报告、改进日志和汇总表
 
 ```powershell
 docker build -t sphere_vio:noetic .
+```
+
+SuperPoint CUDA 构建（需要 NVIDIA 显卡，基础镜像固定 CUDA 11.8 / cuDNN 8）：
+
+```powershell
+docker build -f docker/Dockerfile.cuda -t sphere_vio:cuda .
+```
+
+## SuperPoint CUDA 前端（可选）
+
+`frontend.pipeline_mode` 支持三种取值：
+
+- `legacy_per_camera`（默认）：在原始鱼眼图上做 FAST 检测与 LK 跟踪。
+- `rectified`：在同一套 FAST+LK 流程的 200°×100°、800×400 局部球面校正图上
+  检测跟踪；检测/跟踪坐标最后换算回原始鱼眼像素，极线、三角化和 MSCKF 始终
+  使用原始相机模型。
+- `superpoint_cuda`：在前者基础上，用 SuperPoint 批推理替代逐相机 ORB 描述子。
+  模型输入名必须是 `input`，输出名必须是 `scores` / `descriptors`；四个相机的
+  校正图缩放至 320×160 后组成 batch=4 的 float32 NCHW 张量。
+
+SuperPoint 模型不在本仓库中，运行前需要在 `config/system.yaml` 的
+`frontend.superpoint.model_path` 指向一个 D2SLAM 兼容的
+`superpoint_v1_sim_int32.onnx`。未用
+`-DSPHERE_VIO_WITH_ONNXRUNTIME_CUDA=ON` 构建、模型路径无效或 CUDA Provider
+不可用时，`superpoint_cuda` 会在启动阶段以非零退出码报错，不会回退到 ORB。
+
+运行示例（注意 `--cross-camera-matching` 必须与 `superpoint_cuda` 同时开启）：
+
+```powershell
+docker run --gpus all --rm -v "$repo:/repo" -v "$data:/data" `
+  sphere_vio:cuda bash -lc `
+  "source /opt/ros/noetic/setup.bash; source /root/catkin_ws/devel/setup.bash; `
+   rosrun sphere_vio sphere_vio_feature_runner `
+     --config /repo/config/offline.yaml `
+     --frontend-config /repo/config/system.yaml `
+     --cameras /repo/config/cameras_d2slam.yaml `
+     --bag /data/quadcam_7inch_n3_2023_1_14/eight_noyaw_3_short-sync.bag `
+     --msckf --cross-camera-matching `
+     --output-dir /repo/output/msckf_superpoint_eight_noyaw_3_short"
 ```
 
 ## 快速开始

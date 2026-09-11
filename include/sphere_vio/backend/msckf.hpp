@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <limits>
 #include <vector>
 
 #include <Eigen/Core>
@@ -30,6 +31,14 @@ struct MsckfOptions {
       Eigen::Vector3d::Zero();
   double initialization_duration = 1.0;
   std::size_t minimum_initialization_samples = 20U;
+  // When enabled, initialization requires a near-stationary IMU window. The
+  // deviation bounds below are the maximum tolerated standard deviations of
+  // the accelerometer norm and the gyroscope norm over that window. A
+  // rejected window is cleared so a later, actually stationary window can be
+  // used instead of growing an unbounded mixed buffer.
+  bool stationary_initialization_gate = false;
+  double maximum_accelerometer_deviation = 0.15;
+  double maximum_gyroscope_deviation = 0.01;
   int maximum_clones = 20;
   int maximum_landmarks = 40;
   std::size_t maximum_feature_observations = 40U;
@@ -69,6 +78,13 @@ struct MsckfFeature {
 // Accumulates current-frame pixel observations for every active temporal
 // feature. The runner uses this to feed monocular and multi-camera features to
 // MSCKF instead of relying only on cross-camera stereo LandmarkTracks.
+//
+// Lifecycle contract: observations must be consumed exactly once. Inactive
+// tracks are drained before their observations are submitted, and tracks that
+// reference the clone about to be marginalized are segmented so their older
+// observations are submitted first. This prevents the historical bug where
+// every active track was replayed to the filter on every frame, which counted
+// the same information many times and drove the covariance artificially low.
 class MsckfFeatureAccumulator {
  public:
   explicit MsckfFeatureAccumulator(
@@ -81,6 +97,23 @@ class MsckfFeatureAccumulator {
   const std::vector<MsckfObservation>* observations(
       CameraId camera_id, FeatureId feature_id) const;
   std::vector<TemporalFeatureKey> keys() const;
+
+  // Removes and returns observations for every track whose most recent
+  // observation is older than `maximum_frames_without_observation` frames.
+  // Each returned feature carries its own observations; its persistent id is
+  // the temporal feature id of the drained track.
+  std::vector<MsckfFeature> drainInactive(
+      std::uint64_t current_frame_index,
+      std::uint64_t maximum_frames_without_observation);
+
+  // For every track containing observations at or before
+  // `marginalization_time` (the oldest clone timestamp), removes and returns
+  // only that oldest observation segment. Newer observations stay in the
+  // accumulator so they can form a later measurement block once they become
+  // the oldest or the track goes inactive. This is the correct
+  // single-consumption split instead of discarding the whole multi-frame
+  // track when its first clone is marginalized.
+  std::vector<MsckfFeature> segmentBefore(Timestamp marginalization_time);
 
  private:
   struct TrackState {
@@ -107,6 +140,11 @@ class Msckf {
   std::size_t updateConsidered() const { return update_considered_; }
   std::size_t updateAccepted() const { return update_accepted_; }
   std::size_t updateRejectedGate() const { return update_rejected_gate_; }
+  // Returns the timestamp of the oldest clone or NaN when no clone exists.
+  Timestamp oldestCloneTimestamp() const;
+  // True when the next marginalization step must first consume observations
+  // tied to the oldest clone.
+  bool marginalizationPending() const;
 
   bool initialize(const ImuMeasurement& measurement);
   // Accumulates an IMU window and initializes gravity direction, gyro bias,

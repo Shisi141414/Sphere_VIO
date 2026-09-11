@@ -1,5 +1,7 @@
 #include "sphere_vio/frontend/temporal_frontend.hpp"
 
+#include "sphere_vio/frontend/omni_rectifier.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -41,6 +43,12 @@ void TemporalFrontend::setPyramidLevels(int pyramid_levels) {
   tracker_.setPyramidLevels(pyramid_levels);
 }
 
+void TemporalFrontend::setRectifier(const OmniRectifier* rectifier) {
+  rectifier_ = rectifier;
+  // Image-size changes naturally reset each per-camera tracker state on the
+  // next frame; no explicit reset is needed here.
+}
+
 bool TemporalFrontend::processFrame(const MultiCameraFrame& frame,
                                     const CameraRig& camera_rig,
                                     MultiCameraTrackingResult* result) {
@@ -65,9 +73,12 @@ bool TemporalFrontend::processFrame(const MultiCameraFrame& frame,
   for (CameraId camera_id = 0U; camera_id < kCameraCount; ++camera_id) {
     if (!images[camera_id]) return false;
     const CameraTrackingState& state = states_[camera_id];
+    const cv::Size expected_size =
+        rectifier_ ? cv::Size(rectifier_->width(), rectifier_->height())
+                   : images[camera_id]->image.size();
     const bool same_size =
         !state.initialized || state.previous_image.size() ==
-                                  images[camera_id]->image.size();
+                                  expected_size;
     if (state.initialized && same_size &&
         images[camera_id]->timestamp <= state.previous_timestamp) {
       return false;
@@ -87,8 +98,22 @@ bool TemporalFrontend::processFrame(const MultiCameraFrame& frame,
     camera_result.camera_id = camera_id;
     camera_result.timestamp = image.timestamp;
 
+    // When rectified mode is active, detection, LK, and the stored previous
+    // image all live in the rectified canvas. Pixels are converted back to the
+    // original fisheye coordinate right after each detection/track step, so
+    // geometry consumers keep the raw camera model.
+    cv::Mat working_image;
+    if (rectifier_) {
+      if (!rectifier_->rectifiedImage(camera_id, image.image,
+                                      &working_image)) {
+        return false;
+      }
+    } else {
+      working_image = image.image;
+    }
+
     const bool size_changed =
-        state.initialized && state.previous_image.size() != image.image.size();
+        state.initialized && state.previous_image.size() != working_image.size();
     if (!state.initialized || size_changed) {
       if (size_changed) {
         camera_result.reset_due_to_image_size = true;
@@ -97,10 +122,12 @@ bool TemporalFrontend::processFrame(const MultiCameraFrame& frame,
       }
       state = CameraTrackingState{};
       std::vector<FeatureObservation> observations;
-      if (!detector_.detect(image.image, image.timestamp, camera_id, camera_rig,
-                            {}, options_.detector.maximum_features,
+      if (!detector_.detect(working_image, image.timestamp, camera_id,
+                            camera_rig, {},
+                            options_.detector.maximum_features,
                             &observations,
-                            &camera_result.detection_statistics)) {
+                            &camera_result.detection_statistics,
+                            rectifier_)) {
         return false;
       }
       camera_result.tracks.reserve(observations.size());
@@ -122,10 +149,11 @@ bool TemporalFrontend::processFrame(const MultiCameraFrame& frame,
       camera_result.initialized_this_frame = true;
     } else {
       camera_result.input_tracks = state.tracks.size();
-      if (!tracker_.track(state.previous_image, image.image, image.timestamp,
+      if (!tracker_.track(state.previous_image, working_image,
+                          image.timestamp,
                           camera_id, camera_rig, state.tracks,
                           &camera_result.tracks,
-                          &camera_result.tracking_statistics)) {
+                          &camera_result.tracking_statistics, rectifier_)) {
         return false;
       }
       camera_result.successfully_tracked = camera_result.tracks.size();
@@ -146,15 +174,23 @@ bool TemporalFrontend::processFrame(const MultiCameraFrame& frame,
           camera_result.tracks.size() < options_.detector.maximum_features) {
         std::vector<Eigen::Vector2d> occupied;
         occupied.reserve(camera_result.tracks.size());
-        for (const FeatureTrack& track : camera_result.tracks)
-          occupied.push_back(track.current.pixel);
+        for (const FeatureTrack& track : camera_result.tracks) {
+          Eigen::Vector2d occupied_pixel = track.current.pixel;
+          if (rectifier_ &&
+              !rectifier_->rectifiedPixelFromRaw(camera_id, track.current.pixel,
+                                                 &occupied_pixel)) {
+            return false;
+          }
+          occupied.push_back(occupied_pixel);
+        }
 
         std::vector<FeatureObservation> observations;
         const std::size_t capacity =
             options_.detector.maximum_features - camera_result.tracks.size();
-        if (!detector_.detect(image.image, image.timestamp, camera_id,
+        if (!detector_.detect(working_image, image.timestamp, camera_id,
                               camera_rig, occupied, capacity, &observations,
-                              &camera_result.detection_statistics)) {
+                              &camera_result.detection_statistics,
+                              rectifier_)) {
           return false;
         }
         for (const FeatureObservation& observation : observations) {
@@ -178,7 +214,7 @@ bool TemporalFrontend::processFrame(const MultiCameraFrame& frame,
     computeAgeStatistics(&camera_result);
     state.initialized = true;
     state.previous_timestamp = image.timestamp;
-    state.previous_image = image.image.clone();
+    state.previous_image = working_image.clone();
     state.tracks = camera_result.tracks;
     ++state.frame_count;
     camera_result.processing_time_seconds =

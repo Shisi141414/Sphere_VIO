@@ -226,9 +226,33 @@ int main(int argc, char** argv) {
       command_line.frontend_config_file.empty()
           ? siblingPath(command_line.config_file, "system.yaml")
           : command_line.frontend_config_file;
+  // Always load the fixed synchronization and output settings. The loader
+  // falls back to the authoritative D2SLAM camera-to-IMU offset (-0.186 s)
+  // when a configuration predates this field.
+  if (!sphere_vio::loadSynchronizationOptions(
+          frontend_config, &options, &error)) {
+    std::cerr << "Invalid synchronization configuration: " << error
+              << std::endl;
+    return EXIT_FAILURE;
+  }
   if (!sphere_vio::loadTemporalFrontendOptions(
           frontend_config, &options.frontend, &error)) {
     std::cerr << "Invalid frontend configuration: " << error << std::endl;
+    return EXIT_FAILURE;
+  }
+  options.frontend_mode = options.frontend.pipeline_mode;
+  // SuperPoint 参数与模型路径总是尝试加载；只有真正进入 superpoint_cuda 模式
+  // 时才要求 model_path 非空。这样 legacy/rectified 配置不需要携带该小节。
+  if (!sphere_vio::loadSuperPointOptions(frontend_config, &options.superpoint,
+                                         &error)) {
+    std::cerr << "Invalid SuperPoint configuration: " << error << std::endl;
+    return EXIT_FAILURE;
+  }
+  if (options.frontend_mode == "superpoint_cuda" &&
+      options.superpoint.model_path.empty()) {
+    std::cerr << "frontend.pipeline_mode=superpoint_cuda requires "
+                 "frontend.superpoint.model_path"
+              << std::endl;
     return EXIT_FAILURE;
   }
   options.cross_camera_matching = command_line.cross_camera_matching;

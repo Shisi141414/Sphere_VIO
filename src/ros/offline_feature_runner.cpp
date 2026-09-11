@@ -7,6 +7,7 @@
 #include <ctime>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -32,7 +33,9 @@
 #include "sphere_vio/common/camera_rig_loader.hpp"
 #include "sphere_vio/imu_interval_buffer.hpp"
 #include "sphere_vio/frontend/cross_camera_matcher.hpp"
+#include "sphere_vio/frontend/omni_rectifier.hpp"
 #include "sphere_vio/frontend/orb_descriptor_extractor.hpp"
+#include "sphere_vio/frontend/superpoint_extractor.hpp"
 #include "sphere_vio/frontend/landmark_track_manager.hpp"
 #include "sphere_vio/frontend/triangulation_candidate_evaluator.hpp"
 #include "sphere_vio/ros/frame_assembler.hpp"
@@ -170,68 +173,6 @@ bool topicMatches(const std::string& recorded_topic,
                   const std::string& configured_topic) {
   return recorded_topic == configured_topic ||
          ("/" + recorded_topic) == configured_topic;
-}
-
-void appendObservations(const std::vector<MsckfObservation>& source,
-                        std::vector<MsckfObservation>* destination) {
-  if (!destination) return;
-  destination->insert(destination->end(), source.begin(), source.end());
-}
-
-void sortObservations(std::vector<MsckfObservation>* observations) {
-  if (!observations) return;
-  std::stable_sort(
-      observations->begin(), observations->end(),
-      [](const MsckfObservation& lhs, const MsckfObservation& rhs) {
-        if (lhs.timestamp != rhs.timestamp)
-          return lhs.timestamp < rhs.timestamp;
-        return lhs.camera_id < rhs.camera_id;
-      });
-}
-
-// Builds the MSCKF feature list from cross-camera LandmarkTracks (merged across
-// cameras) and every remaining per-camera temporal feature.
-std::vector<MsckfFeature> buildMsckfFeatures(
-    const MsckfFeatureAccumulator& accumulator,
-    const LandmarkTrackManager& landmark_manager,
-    std::uint64_t* next_feature_id) {
-  std::vector<MsckfFeature> features;
-  std::set<TemporalFeatureKey> merged_keys;
-  if (!next_feature_id) return features;
-
-  for (const LandmarkTrack& track : landmark_manager.activeTracks()) {
-    if (track.state == LandmarkTrackState::kRetired) continue;
-    MsckfFeature feature;
-    feature.id = (*next_feature_id)++;
-    feature.persistent_id =
-        (static_cast<std::uint64_t>(1U) << 63U) | track.id.value;
-    for (const auto& member : track.member_features) {
-      const std::vector<MsckfObservation>* observations =
-          accumulator.observations(member.second.camera_id,
-                                   member.second.feature_id);
-      if (!observations) continue;
-      appendObservations(*observations, &feature.observations);
-      merged_keys.insert(member.second);
-    }
-    sortObservations(&feature.observations);
-    if (feature.observations.size() >= 2U) {
-      features.push_back(std::move(feature));
-    }
-  }
-
-  for (const TemporalFeatureKey& key : accumulator.keys()) {
-    if (merged_keys.count(key) != 0U) continue;
-    const std::vector<MsckfObservation>* observations =
-        accumulator.observations(key.camera_id, key.feature_id);
-    if (!observations || observations->size() < 2U) continue;
-    MsckfFeature feature;
-    feature.id = (*next_feature_id)++;
-    feature.persistent_id = key.feature_id;
-    feature.observations = *observations;
-    sortObservations(&feature.observations);
-    features.push_back(std::move(feature));
-  }
-  return features;
 }
 
 void addResult(const CameraTrackingResult& result,
@@ -797,13 +738,52 @@ int OfflineFeatureRunner::run() {
   FrameAssembler assembler(options_.bag.maximum_image_time_difference,
                            options_.bag.require_exact_image_timestamps);
   TemporalFrontend frontend(options_.frontend);
+  std::unique_ptr<OmniRectifier> omni_rectifier;
+  if (options_.frontend_mode == "rectified" ||
+      options_.frontend_mode == "superpoint_cuda") {
+    // 200 horizontal x 100 vertical degrees on an 800x400 canvas, matching
+    // the D2SLAM undistortion profile. Geometry still uses the raw fisheye
+    // pixel through the original camera model.
+    OmniRectifierOptions rectifier_options;
+    rectifier_options.width = 800;
+    rectifier_options.height = 400;
+    omni_rectifier.reset(new OmniRectifier(camera_rig, rectifier_options));
+    frontend.setRectifier(omni_rectifier.get());
+  }
   std::unique_ptr<OrbDescriptorExtractor> descriptor_extractor;
+  std::unique_ptr<SuperPointExtractor> superpoint_extractor;
   std::unique_ptr<CrossCameraMatcher> cross_camera_matcher;
   std::unique_ptr<TriangulationCandidateEvaluator> candidate_evaluator;
   std::unique_ptr<LandmarkTrackManager> landmark_track_manager;
   if (options_.cross_camera_matching) {
-    descriptor_extractor.reset(new OrbDescriptorExtractor(options_.descriptor));
+    // SuperPoint 模式用“四张校正图的批推理”替代逐相机 ORB 描述子，但共用
+    // 同一个 CrossCameraMatcher（它已按 Hamming/L2 描述子格式自动分派距离）。
+    // 时序 LK 跟踪仍由 TemporalFrontend 在 rectified 模式下完成。
+    if (options_.frontend_mode != "superpoint_cuda") {
+      descriptor_extractor.reset(
+          new OrbDescriptorExtractor(options_.descriptor));
+    }
     cross_camera_matcher.reset(new CrossCameraMatcher(options_.matcher));
+  }
+  if (options_.frontend_mode == "superpoint_cuda") {
+    // superpoint_cuda 的产出只有跨相机描述子/匹配，若没开匹配它没有任何
+    // 下游消费者，直接报错而不是空转整段 bag。
+    if (!options_.cross_camera_matching) {
+      std::cerr << "frontend.pipeline_mode=superpoint_cuda requires "
+                   "--cross-camera-matching"
+                << std::endl;
+      bag.close();
+      return 9;
+    }
+    superpoint_extractor.reset(new SuperPointExtractor(options_.superpoint));
+    if (!superpoint_extractor->available()) {
+      // 构建时未启用 ONNX Runtime CUDA、缺少模型或没有可用 GPU 都在这里以
+      // 明确错误终止，绝不静默退回 ORB。
+      std::cerr << "SuperPoint backend is unavailable: "
+                << superpoint_extractor->error() << std::endl;
+      bag.close();
+      return 9;
+    }
   }
   if (options_.triangulation_candidates) {
     candidate_evaluator.reset(new TriangulationCandidateEvaluator(
@@ -820,10 +800,7 @@ int OfflineFeatureRunner::run() {
   OutputRecorder output_recorder;
   MsckfFeatureAccumulator msckf_feature_accumulator(
       options_.msckf.maximum_feature_observations);
-  std::uint64_t msckf_next_feature_id = 1U;
   std::uint64_t input_frame_count = 0U;
-  bool msckf_time_offset_estimated = false;
-  bool msckf_extrinsics_estimated = false;
   if (options_.enable_msckf) {
     msckf_backend.reset(new Msckf(options_.msckf));
     backend_landmarks.reset(new BackendLandmarkMap());
@@ -835,7 +812,8 @@ int OfflineFeatureRunner::run() {
     ros_output.reset(new RosOutput());
   }
   if (!options_.output_directory.empty() &&
-      !output_recorder.open(options_.output_directory)) {
+      !output_recorder.open(options_.output_directory,
+                            options_.output_period)) {
     std::cerr << "Cannot open output directory: "
               << options_.output_directory << std::endl;
     bag.close();
@@ -951,33 +929,40 @@ int OfflineFeatureRunner::run() {
       last_frame_timestamp = frame.timestamp;
 
       if (backend || msckf_backend) {
+        // Convert the camera timestamp to the IMU clock before touching any
+        // interval or filter state. The fixed calibration offset is applied
+        // verbatim; the previous +-25 ms online search is disabled in this
+        // phase because it repeatedly fit a nearly unobservable nuisance
+        // parameter to sparse visual data.
+        const Timestamp imu_frame_timestamp =
+            frame.timestamp + options_.camera_to_imu_offset_s;
         const std::vector<ImuMeasurement> interval =
             backend_imu_buffer.extract(
                 backend_has_frame ? backend_previous_frame_time : 0.0,
-                frame.timestamp);
+                imu_frame_timestamp);
         if (msckf_backend) {
           if (!msckf_backend->initialized()) {
             if (!interval.empty()) {
-              msckf_backend->initialize(interval, frame.timestamp);
+              msckf_backend->initialize(interval, imu_frame_timestamp);
             }
           } else {
-            msckf_backend->propagate(interval, frame.timestamp);
+            msckf_backend->propagate(interval, imu_frame_timestamp);
           }
           if (msckf_backend->initialized()) {
-            msckf_backend->augmentClone(frame.timestamp);
+            msckf_backend->augmentClone(imu_frame_timestamp);
           }
         } else if (backend) {
           if (!backend->initialized()) {
             if (!interval.empty()) {
               backend->initialize(interval.front());
-              backend->propagate(interval, frame.timestamp);
+              backend->propagate(interval, imu_frame_timestamp);
             }
           } else {
-            backend->propagate(interval, frame.timestamp);
+            backend->propagate(interval, imu_frame_timestamp);
           }
         }
         backend_has_frame = true;
-        backend_previous_frame_time = frame.timestamp;
+        backend_previous_frame_time = imu_frame_timestamp;
       }
 
       for (CameraId id = 0U; id < 4U; ++id)
@@ -986,14 +971,16 @@ int OfflineFeatureRunner::run() {
       if (msckf_backend) {
         for (const CameraTrackingResult& camera : tracking_result.cameras) {
           for (const FeatureTrack& track : camera.tracks) {
+            // Observations are stamped in the IMU clock. MSCKF clones were
+            // augmented with the same offset, so the per-feature
+            // observation-to-clone association is consistent even though the
+            // raw FeatureObservation keeps its camera timestamp.
             msckf_feature_accumulator.add(
-                track.camera_id, track.id, track.current.timestamp,
+                track.camera_id, track.id,
+                track.current.timestamp + options_.camera_to_imu_offset_s,
                 track.current.pixel, completed_frames);
           }
         }
-        msckf_feature_accumulator.prune(
-            completed_frames,
-            options_.msckf.maximum_frames_without_observation);
       }
 
       std::vector<CrossCameraPairResult> cross_camera_results;
@@ -1012,26 +999,61 @@ int OfflineFeatureRunner::run() {
         }
         std::vector<CameraDescriptorSet> descriptor_sets;
         descriptor_sets.reserve(4U);
-        for (CameraId id = 0U; id < 4U; ++id) {
-          if (!images[id]) {
-            std::cerr << "Completed frame is missing camera " << id
-                      << std::endl;
+        if (superpoint_extractor) {
+          // 从原始鱼眼图现做四张 800x400 校正图，交给一次 CUDA 批推理。模型
+          // 输出的角点会被转回原始鱼眼像素并配上 body 方位，几何模块（极线、
+          // 三角化、MSCKF）始终只看到原始坐标。
+          std::array<cv::Mat, 4> rectified_images;
+          for (CameraId id = 0U; id < 4U; ++id) {
+            if (!images[id] || !omni_rectifier->rectifiedImage(
+                                   id, images[id]->image,
+                                   &rectified_images[id])) {
+              std::cerr << "Cannot rectify camera " << id << " at frame "
+                        << completed_frames << std::endl;
+              bag.close();
+              return 7;
+            }
+          }
+          std::array<CameraDescriptorSet, 4> superpoint_sets;
+          if (!superpoint_extractor->extract(
+                  *omni_rectifier, camera_rig, frame.timestamp,
+                  rectified_images, &superpoint_sets)) {
+            std::cerr << "SuperPoint extraction failed at frame "
+                      << completed_frames << ": "
+                      << superpoint_extractor->error() << std::endl;
             bag.close();
             return 7;
           }
-          CameraDescriptorSet descriptor_set;
-          DescriptorExtractionStatistics extraction_statistics;
-          if (!descriptor_extractor->extract(
-                  images[id]->image, tracking_result.cameras[id],
-                  &descriptor_set, &extraction_statistics)) {
-            std::cerr << "ORB descriptor extraction failed for camera " << id
-                      << " at frame " << completed_frames << std::endl;
-            bag.close();
-            return 7;
+          for (CameraId id = 0U; id < 4U; ++id) {
+            DescriptorExtractionStatistics extraction_statistics;
+            extraction_statistics.accepted =
+                superpoint_sets[id].feature_ids.size();
+            addDescriptorResult(extraction_statistics,
+                                &descriptor_statistics[id]);
+            descriptor_sets.push_back(std::move(superpoint_sets[id]));
           }
-          addDescriptorResult(extraction_statistics,
-                              &descriptor_statistics[id]);
-          descriptor_sets.push_back(std::move(descriptor_set));
+        } else {
+          for (CameraId id = 0U; id < 4U; ++id) {
+            if (!images[id]) {
+              std::cerr << "Completed frame is missing camera " << id
+                        << std::endl;
+              bag.close();
+              return 7;
+            }
+            CameraDescriptorSet descriptor_set;
+            DescriptorExtractionStatistics extraction_statistics;
+            if (!descriptor_extractor->extract(
+                    images[id]->image, tracking_result.cameras[id],
+                    &descriptor_set, &extraction_statistics)) {
+              std::cerr << "ORB descriptor extraction failed for camera " << id
+                        << " at frame " << completed_frames << std::endl;
+              bag.close();
+              return 7;
+            }
+            addDescriptorResult(extraction_statistics,
+                                &descriptor_statistics[id]);
+            descriptor_sets.push_back(std::move(descriptor_set));
+          }
         }
         if (!cross_camera_matcher->matchConfiguredPairs(
                 descriptor_sets, camera_rig, &cross_camera_results)) {
@@ -1133,27 +1155,25 @@ int OfflineFeatureRunner::run() {
                                         options_.backend_position_noise);
               }
             }
-          } else if (msckf_backend && msckf_backend->initialized() &&
-                     landmark_track_manager) {
-            std::vector<MsckfFeature> msckf_features = buildMsckfFeatures(
-                msckf_feature_accumulator, *landmark_track_manager,
-                &msckf_next_feature_id);
+          } else if (msckf_backend && msckf_backend->initialized()) {
+            // Single-consumption MSCKF update. A feature is submitted only
+            // when its track went inactive, or when the oldest clone that it
+            // observes is about to be marginalized. Active tracks are never
+            // replayed with their complete history on every frame.
+            std::vector<MsckfFeature> msckf_features =
+                msckf_feature_accumulator.drainInactive(
+                    completed_frames,
+                    options_.msckf.maximum_frames_without_observation);
+            if (msckf_backend->marginalizationPending()) {
+              std::vector<MsckfFeature> segmented =
+                  msckf_feature_accumulator.segmentBefore(
+                      msckf_backend->oldestCloneTimestamp());
+              msckf_features.insert(msckf_features.end(),
+                                    std::make_move_iterator(segmented.begin()),
+                                    std::make_move_iterator(segmented.end()));
+            }
             msckf_backend->update(msckf_features, camera_rig);
             msckf_backend->marginalizeOldestClone();
-            if (!msckf_time_offset_estimated &&
-                msckf_backend->cloneCount() >= 8U &&
-                !msckf_features.empty()) {
-              msckf_time_offset_estimated = msckf_backend->estimateTimeOffset(
-                  msckf_features, camera_rig);
-            }
-            if (msckf_time_offset_estimated &&
-                !msckf_extrinsics_estimated &&
-                msckf_backend->cloneCount() >= 8U &&
-                !msckf_features.empty()) {
-              msckf_extrinsics_estimated =
-                  msckf_backend->estimateExtrinsicPerturbation(
-                      msckf_features, camera_rig);
-            }
           }
         }
         const double cross_camera_processing_time =
@@ -1194,8 +1214,18 @@ int OfflineFeatureRunner::run() {
       }
 
       if (backend_landmarks) {
-        output_recorder.record(output_state, backend_landmarks->landmarks());
-        if (ros_output) {
+        const bool backend_output_ready =
+            (backend && backend->initialized()) ||
+            (msckf_backend && msckf_backend->initialized());
+        // Never emit the default zero-pose state that exists only while the
+        // IMU initialization window is still collecting samples. The offline
+        // trajectory therefore starts at the first initialized pose and can
+        // be evaluated without a bogus (0,0,0) prefix.
+        if (backend_output_ready) {
+          output_recorder.record(frame.timestamp, output_state,
+                                 backend_landmarks->landmarks());
+        }
+        if (backend_output_ready && ros_output) {
           ros_output->publish(output_state, output_covariance,
                               backend_landmarks->landmarks());
         }
@@ -1232,6 +1262,23 @@ int OfflineFeatureRunner::run() {
           std::cout << "  live landmark hypotheses="
                     << landmark_track_manager->liveTrackCount()
                     << " (observation association only)" << std::endl;
+        }
+        if (msckf_backend && msckf_backend->initialized()) {
+          std::cout << "  msckf: |p|="
+                    << msckf_backend->state().p_wb.norm()
+                    << " |v|=" << msckf_backend->state().v_wb.norm()
+                    << " clones=" << msckf_backend->cloneCount()
+                    << " considered=" << msckf_backend->updateConsidered()
+                    << " accepted=" << msckf_backend->updateAccepted()
+                    << " gate_rejected="
+                    << msckf_backend->updateRejectedGate()
+                    << " covariance_trace="
+                    << msckf_backend->covariance().trace() << std::endl;
+        } else if (backend && backend->initialized()) {
+          std::cout << "  eskf: |p|=" << backend->state().p_wb.norm()
+                    << " |v|=" << backend->state().v_wb.norm()
+                    << " covariance_trace="
+                    << backend->covariance().trace() << std::endl;
         }
       }
 
@@ -1479,6 +1526,29 @@ int OfflineFeatureRunner::run() {
               << "\n  landmark_count: " << msckf_backend->landmarkCount()
               << std::endl;
   }
+
+  const ImuIntervalBuffer::Statistics& imu_statistics =
+      backend_imu_buffer.statistics();
+  const double mean_imu_interval =
+      imu_statistics.interval_count > 0U
+          ? imu_statistics.interval_sum /
+                static_cast<double>(imu_statistics.interval_count)
+          : 0.0;
+  std::cout << "\nIMU/clock diagnostics"
+            << "\n  camera_to_imu_offset_s: "
+            << options_.camera_to_imu_offset_s
+            << "\n  imu_received: " << imu_statistics.received_measurements
+            << "\n  imu_min_interval: " << imu_statistics.minimum_interval
+            << "\n  imu_max_interval: " << imu_statistics.maximum_interval
+            << "\n  imu_mean_interval: " << mean_imu_interval
+            << "\n  imu_large_intervals: " << imu_statistics.large_intervals
+            << "\n  imu_duplicates: " << imu_statistics.duplicate_timestamps
+            << "\n  imu_non_monotonic: "
+            << imu_statistics.non_monotonic_timestamps
+            << "\n  boundary_interpolations: "
+            << imu_statistics.boundary_interpolations
+            << "\n  boundary_holds: " << imu_statistics.boundary_holds
+            << std::endl;
 
   output_recorder.close();
   return completed_frames == 0U ? 7 : 0;

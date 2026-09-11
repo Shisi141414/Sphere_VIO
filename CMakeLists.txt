@@ -28,6 +28,31 @@ find_package(Eigen3 REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs features2d video highgui)
 find_package(yaml-cpp REQUIRED)
 
+# Optional ONNX Runtime CUDA provider for the SuperPoint frontend.
+#
+# Default OFF keeps the standard ROS Noetic build free of any ONNX Runtime or
+# CUDA dependency: src/frontend/superpoint_extractor.cpp then compiles a stub
+# that reports itself unavailable instead of silently degrading to ORB.
+#
+# Enable with:
+#   catkin_make -DSPHERE_VIO_WITH_ONNXRUNTIME_CUDA=ON \
+#               -DONNXRUNTIME_DIR=/path/to/onnxruntime
+# The directory must contain include/onnxruntime_cxx_api.h and a
+# lib/libonnxruntime.so built for CUDA 11.8 (see docker/Dockerfile.cuda).
+option(SPHERE_VIO_WITH_ONNXRUNTIME_CUDA "Build SuperPoint with the ONNX Runtime CUDA provider" OFF)
+if(SPHERE_VIO_WITH_ONNXRUNTIME_CUDA)
+  find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
+    HINTS "${ONNXRUNTIME_DIR}/include" "$ENV{ONNXRUNTIME_DIR}/include")
+  find_library(ONNXRUNTIME_LIBRARY onnxruntime
+    HINTS "${ONNXRUNTIME_DIR}/lib" "$ENV{ONNXRUNTIME_DIR}/lib")
+  if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
+    message(FATAL_ERROR
+      "SPHERE_VIO_WITH_ONNXRUNTIME_CUDA=ON requires ONNXRUNTIME_DIR pointing "
+      "at an ONNX Runtime install with include/onnxruntime_cxx_api.h and "
+      "lib/libonnxruntime.so")
+  endif()
+endif()
+
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
 
@@ -173,7 +198,9 @@ add_library(sphere_vio_frontend
   src/frontend/feature_detector.cpp
   src/frontend/feature_tracker.cpp
   src/frontend/landmark_track_manager.cpp
+  src/frontend/omni_rectifier.cpp
   src/frontend/orb_descriptor_extractor.cpp
+  src/frontend/superpoint_extractor.cpp
   src/frontend/temporal_frontend.cpp
   src/frontend/triangulation_candidate_evaluator.cpp
 )
@@ -185,6 +212,16 @@ target_link_libraries(sphere_vio_frontend
   opencv_features2d
   opencv_video
 )
+if(SPHERE_VIO_WITH_ONNXRUNTIME_CUDA)
+  target_compile_definitions(sphere_vio_frontend PUBLIC
+    SPHERE_VIO_WITH_ONNXRUNTIME_CUDA)
+  target_include_directories(sphere_vio_frontend PUBLIC
+    ${ONNXRUNTIME_INCLUDE_DIR})
+  # The GPU shared library carries its own CUDA/cuDNN linkage; only link the
+  # runtime itself and let the caller set LD_LIBRARY_PATH for the provider
+  # libraries shipped alongside it.
+  target_link_libraries(sphere_vio_frontend ${ONNXRUNTIME_LIBRARY})
+endif()
 
 add_library(sphere_vio_backend
   src/backend/eskf.cpp
@@ -406,6 +443,18 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET test_omni_radtan)
     target_link_libraries(test_omni_radtan sphere_vio_camera)
   endif()
+  catkin_add_gtest(test_omni_rectifier
+    test/test_main.cpp
+    test/test_omni_rectifier.cpp
+  )
+  if(TARGET test_omni_rectifier)
+    target_link_libraries(test_omni_rectifier
+      sphere_vio_frontend
+      sphere_vio_camera
+      opencv_core
+      opencv_imgproc
+    )
+  endif()
   catkin_add_gtest(test_camera_rig
     test/test_main.cpp
     test/test_camera_rig.cpp
@@ -529,6 +578,16 @@ if(CATKIN_ENABLE_TESTING)
   )
   if(TARGET test_orb_descriptor_extractor)
     target_link_libraries(test_orb_descriptor_extractor
+      sphere_vio_frontend
+      sphere_vio_camera
+    )
+  endif()
+  catkin_add_gtest(test_superpoint_extractor
+    test/test_main.cpp
+    test/test_superpoint_extractor.cpp
+  )
+  if(TARGET test_superpoint_extractor)
+    target_link_libraries(test_superpoint_extractor
       sphere_vio_frontend
       sphere_vio_camera
     )
