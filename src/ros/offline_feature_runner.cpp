@@ -822,8 +822,6 @@ int OfflineFeatureRunner::run() {
       options_.msckf.maximum_feature_observations);
   std::uint64_t msckf_next_feature_id = 1U;
   std::uint64_t input_frame_count = 0U;
-  bool msckf_time_offset_estimated = false;
-  bool msckf_extrinsics_estimated = false;
   if (options_.enable_msckf) {
     msckf_backend.reset(new Msckf(options_.msckf));
     backend_landmarks.reset(new BackendLandmarkMap());
@@ -843,6 +841,12 @@ int OfflineFeatureRunner::run() {
   }
   ImuIntervalBuffer backend_imu_buffer(
       options_.bag.maximum_imu_time_difference);
+  // Shift raw IMU timestamps into the camera time base before they enter
+  // the backend. D2SLAM stores td = t_imu - t_camera = -0.186 s, so
+  // the camera clock leads the IMU clock by 0.186 s. Adding -td maps
+  // every IMU sample to camera time so clones, observations, and the
+  // output trajectory all share one clock.
+  const double imu_to_camera_shift = -options_.bag.camera_to_imu_offset_s;
   bool backend_imu_preloaded = false;
   if (backend || msckf_backend) {
     rosbag::View imu_view(
@@ -855,6 +859,7 @@ int OfflineFeatureRunner::run() {
       if (!message) continue;
       ImuMeasurement measurement;
       if (convertImuMessage(*message, &measurement)) {
+        measurement.timestamp += imu_to_camera_shift;
         backend_imu_buffer.add(measurement);
       }
     }
@@ -896,6 +901,7 @@ int OfflineFeatureRunner::run() {
       if (message) {
         ImuMeasurement measurement;
         if (convertImuMessage(*message, &measurement)) {
+          measurement.timestamp += imu_to_camera_shift;
           backend_imu_buffer.add(measurement);
         }
       }
@@ -1140,20 +1146,6 @@ int OfflineFeatureRunner::run() {
                 &msckf_next_feature_id);
             msckf_backend->update(msckf_features, camera_rig);
             msckf_backend->marginalizeOldestClone();
-            if (!msckf_time_offset_estimated &&
-                msckf_backend->cloneCount() >= 8U &&
-                !msckf_features.empty()) {
-              msckf_time_offset_estimated = msckf_backend->estimateTimeOffset(
-                  msckf_features, camera_rig);
-            }
-            if (msckf_time_offset_estimated &&
-                !msckf_extrinsics_estimated &&
-                msckf_backend->cloneCount() >= 8U &&
-                !msckf_features.empty()) {
-              msckf_extrinsics_estimated =
-                  msckf_backend->estimateExtrinsicPerturbation(
-                      msckf_features, camera_rig);
-            }
           }
         }
         const double cross_camera_processing_time =

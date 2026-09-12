@@ -13,6 +13,10 @@ topics:
 synchronization:
   maximum_image_time_difference: 0.001
   require_exact_image_timestamps: true
+  # Fixed camera-to-IMU offset (D2SLAM `td`): t_imu = t_camera + offset.
+  # For quadcam_7inch_n3, td = -0.186 means IMU timestamps are 0.186 s
+  # behind camera timestamps (t_imu = t_camera - 0.186).
+  camera_to_imu_offset_s: -0.186
 
 offline:
   start_time_offset: 0.0

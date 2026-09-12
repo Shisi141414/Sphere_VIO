@@ -20,6 +20,9 @@ struct OfflineBagConfiguration {
   std::string d2slam_stitched_image_topic = "/arducam/image/compressed";
   double maximum_image_time_difference = 0.001;
   bool require_exact_image_timestamps = true;
+  // Fixed camera-to-IMU offset (D2SLAM `td`): t_imu = t_camera + offset.
+  // Applied when shifting raw IMU timestamps into the camera time base.
+  double camera_to_imu_offset_s = 0.0;
   double start_time_offset = 0.0;
   double duration = -1.0;
   int progress_interval_frames = 100;

@@ -1,0 +1,61 @@
+# ARM64 ROS Noetic build for NVIDIA Jetson (CPU-only).
+#
+# Your Jetson runs Ubuntu 24.04 (JetPack 6 / L4T R39), which has no native ROS
+# Noetic apt packages (Noetic targets Ubuntu 20.04). This image pulls the
+# aarch64 ROS Noetic base from Docker Hub and builds Sphere-VIO inside a
+# container, so the offline runner + unit tests work on the Jetson CPU without
+# touching ROS2 or the host's 24.04 userspace.
+#
+# Build and use it directly on the Jetson:
+#   docker build -f docker/Dockerfile.jetson -t sphere_vio:jetson .
+#   docker run --rm -v "$PWD:/repo" sphere_vio:jetson ...
+#
+# This is deliberately CPU-only. The SuperPoint CUDA frontend needs a
+# JetPack-specific aarch64 ONNX Runtime GPU build and is set up separately; it
+# does not use this image.
+FROM arm64v8/ros:noetic-ros-base-focal
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CATKIN_WS=/root/catkin_ws
+
+# Same dependencies as the x86 Dockerfile. ROS packages come from
+# packages.ros.org, which publishes arm64 builds for Ubuntu 20.04 (focal).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    ca-certificates \
+    libeigen3-dev \
+    libopencv-dev \
+    libyaml-cpp-dev \
+    libgtk-3-0 \
+    libgl1 \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libxkbcommon-x11-0 \
+    xauth \
+    ros-noetic-catkin \
+    ros-noetic-cv-bridge \
+    ros-noetic-image-transport \
+    ros-noetic-message-filters \
+    ros-noetic-rosbag \
+    ros-noetic-tf2 \
+    ros-noetic-tf2-ros \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR ${CATKIN_WS}
+RUN mkdir -p src
+COPY . src/sphere_vio
+
+RUN /bin/bash -c "source /opt/ros/noetic/setup.bash && \
+    catkin_make -DCATKIN_WHITELIST_PACKAGES=\"sphere_vio\""
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+WORKDIR ${CATKIN_WS}
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

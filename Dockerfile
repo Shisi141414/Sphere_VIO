@@ -5,6 +5,13 @@ FROM ros:noetic-ros-base-focal
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CATKIN_WS=/root/catkin_ws
 
+# Use Tsinghua TUNA mirrors for Ubuntu/ROS. The default archive.ubuntu.com
+# and packages.ros.org are international; on a China network they are slow,
+# and a local proxy (e.g. Clash on 127.0.0.1:7897) may reset large downloads.
+# Switching to a domestic mirror avoids both problems.
+RUN sed -i 's|archive.ubuntu.com|mirrors.tuna.tsinghua.edu.cn|g; s|security.ubuntu.com|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list \
+    && find /etc/apt/sources.list.d -name '*.list' -exec sed -i 's|packages.ros.org|mirrors.tuna.tsinghua.edu.cn|g' {} +
+
 # Keep the image deterministic and small: install only the dependencies used by
 # package.xml, the CMakeLists.txt targets, and the OpenCV GUI tools.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libeigen3-dev \
     libopencv-dev \
     libyaml-cpp-dev \
+    python3-numpy \
     libgtk-3-0 \
     libgl1 \
     libgl1-mesa-glx \

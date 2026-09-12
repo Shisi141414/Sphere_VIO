@@ -73,6 +73,8 @@ bool loadOfflineBagConfiguration(const std::string& config_file,
                   &configuration->maximum_image_time_difference);
     readIfPresent(root["synchronization"], "require_exact_image_timestamps",
                   &configuration->require_exact_image_timestamps);
+    readIfPresent(root["synchronization"], "camera_to_imu_offset_s",
+                  &configuration->camera_to_imu_offset_s);
     readIfPresent(root["offline"], "start_time_offset",
                   &configuration->start_time_offset);
     readIfPresent(root["offline"], "duration", &configuration->duration);
